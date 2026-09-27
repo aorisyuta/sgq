@@ -2323,14 +2323,15 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
       v: 2, app: APP_VERSION, types: [...new Set(doc.components.map(c => c.type))].sort(),
       components: doc.components.map(c => ({ id: c.id, type: c.type, x: c.x, y: c.y, rot: c.rot, ref: c.ref, val: c.val, props: c.props })),
       wires: doc.wires.map(w => ({ id: w.id, x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 })),
-      junctions: doc.junctions.map(j => ({ id: j.id, x: j.x, y: j.y })), nextId: doc.nextId
+      junctions: doc.junctions.map(j => ({ id: j.id, x: j.x, y: j.y })), nextId: doc.nextId,
+      perfboard: doc.perfboard || undefined   // 蛇の目基板の手配置 (部品の穴位置と配線)
     }, null, 1);
   }
   function deserialize(txt) {
     const o = JSON.parse(txt);
     return ensureIds({
       components: o.components || [], wires: o.wires || [],
-      junctions: o.junctions || [], nextId: o.nextId || 1000
+      junctions: o.junctions || [], nextId: o.nextId || 1000, perfboard: o.perfboard || undefined
     });
   }
 
@@ -3051,7 +3052,7 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
   function restore(txt) {
     const d = CD.deserialize(txt);
     S.doc.components = d.components; S.doc.wires = d.wires;
-    S.doc.junctions = d.junctions; S.doc.nextId = d.nextId;
+    S.doc.junctions = d.junctions; S.doc.nextId = d.nextId; S.doc.perfboard = d.perfboard;
     S.selection.clear(); S.nets = null; refreshNets(); rp(); panels();
   }
   function undo() { if (!S.undo.length) return; S.redo.push(CD.serialize(S.doc)); restore(S.undo.pop()); }
@@ -4424,8 +4425,11 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
       throw new Error('この CAD に無い部品種別が含まれています: ' + unknown.join(', ') +
         '。新しいバージョンの UniBoard CAD で開いてください（部品が消えたまま基板化すると配線が欠けます）。');
     }
-    pushUndo(); S.doc.components = d.components; S.doc.wires = d.wires; S.doc.junctions = d.junctions; S.doc.nextId = d.nextId;
-    S.board = null; refreshNets(); $('modal').hidden = true; setTab('sch'); fit(); panels();
+    pushUndo(); S.doc.components = d.components; S.doc.wires = d.wires; S.doc.junctions = d.junctions; S.doc.nextId = d.nextId; S.doc.perfboard = d.perfboard;
+    S.board = null; refreshNets(); $('modal').hidden = true;
+    // 蛇の目基板の手配置が入っていれば、基板タブでその配置・配線を開く
+    if (d.perfboard && window.UBPerf) { setTab('pcb'); } else { setTab('sch'); fit(); }
+    panels();
   }
   $('bImport').onclick = () => openModal('回路図を読み込む', body => {
     const drop = el('label', 'dropzone');
