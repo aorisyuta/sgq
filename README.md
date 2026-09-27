@@ -32,6 +32,14 @@
 
 ショートカット: `Ctrl+K` コマンド検索、`F5` シミュレーション実行、`1/2/3` 画面切替、`?` 一覧。
 
+## Android アプリ
+
+`dist/UniBoardSPICE.apk`（Android 7.0 以上）。スマホで開いてインストールしてください（「提供元不明のアプリ」の許可が必要です）。
+中身は同じ `index.html` を WebView で表示するアプリで、保存は Android の保存先選択画面、読み込みはファイル選択画面を使います。戻るボタンは開いている画面を順に閉じます。
+
+作り直すとき: `python3 android/build.py`（Android SDK は不要。Maven Central から android-all / dx / apksig を取得して組み立て・署名します）。
+署名鍵 `android/uniboard-release.p12` を変えると、上書きインストールできなくなります。
+
 ## 開発
 
 ```

@@ -301,6 +301,25 @@
   if (window.innerWidth <= 640 && S().palOpen) { S().palOpen = false; A.applyPanels(); }
   if (window.innerWidth <= 1100 && S().inspOpen) { S().inspOpen = false; A.applyPanels(); }
 
+  /* ================= Android の戻るボタン ================= */
+  // 開いているもの (コマンド検索 → ダイアログ → 値の編集 → 配置・配線中 → パネル → PCB / 基板タブ) を 1 つずつ閉じる。
+  // 閉じるものが無ければ false を返し、アプリ側で終了する
+  window.UBAndroidBack = () => {
+    const st = S();
+    if (!cp.hidden) { closeCmd(); return true; }
+    if (!$('modal').hidden) { $('modal').hidden = true; return true; }
+    if (document.querySelector('.popover')) { A.closePop(); return true; }
+    if (st.place || st.wireStart || st.tool !== 'sel') { st.place = null; st.placeLib = null; st.wireStart = null; A.setTool('sel'); A.paletteSync(); return true; }
+    if (st.selection.size) { st.selection.clear(); A.panels(); A.rp(); return true; }
+    if (window.innerWidth <= 640 && st.palOpen) { st.palOpen = false; A.applyPanels(); return true; }
+    if (window.innerWidth <= 1100 && st.inspOpen) { st.inspOpen = false; A.applyPanels(); return true; }
+    if (window.UBPcb && window.UBPcb.state.active) { window.UBPcb.activate(false); A.setTab('sch'); return true; }
+    if (window.UBSim && window.UBSim.state.open) { window.UBSim.openDock(false); return true; }
+    if (st.tab !== 'sch') { A.setTab('sch'); return true; }
+    return false;
+  };
+  if (window.AndroidBridge) document.documentElement.classList.add('android');
+
   /* ================= 自動保存 ================= */
   const CD = window.CADDoc;
   let last = null;

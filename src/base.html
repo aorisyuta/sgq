@@ -4505,7 +4505,17 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
       : /\.png$/.test(name) ? 'image/png'
       : /\.jpe?g$/.test(name) ? 'image/jpeg'
       : /\.json$/.test(name) ? 'application/json'
-      : /\.csv$/.test(name) ? 'text/csv' : 'text/plain';
+      : /\.csv$/.test(name) ? 'text/csv'
+      : /\.zip$/.test(name) ? 'application/zip' : /\.(drl|gbr|gtl|gbl)$/.test(name) ? 'application/octet-stream' : 'text/plain';
+    // Android アプリ版: 端末の「保存先を選ぶ」画面で書き出す
+    if (window.AndroidBridge && window.AndroidBridge.saveFile) {
+      try {
+        const blob = text instanceof Blob ? text : new Blob([text], { type: mime + ';charset=utf-8' });
+        const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = rej; r.readAsDataURL(blob); });
+        window.AndroidBridge.saveFile(name, mime, b64);
+        return '保存先を選んでください';
+      } catch (e) { return '保存できませんでした'; }
+    }
     try {
       const dl = (window.claude && window.claude.use) ? await window.claude.use('downloads') : null;
       if (dl) {
