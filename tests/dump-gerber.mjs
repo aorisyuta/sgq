@@ -1,0 +1,13 @@
+import { createRequire } from 'node:module'; const { chromium } = createRequire('/opt/node22/lib/node_modules/')('playwright');
+import fs from 'node:fs';
+const b = await chromium.launch(); const p = await b.newPage({ viewport: { width: 1400, height: 900 } });
+await p.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort());
+await p.goto('file://' + process.cwd() + '/index.html'); await p.waitForTimeout(1000);
+await p.evaluate(() => window.UBPcb.activate(true)); await p.waitForTimeout(300);
+await p.evaluate(() => window.UBPcb.autoRoute());
+const files = await p.evaluate(() => window.UBPcb.gerberFiles());
+const dir = process.argv[2]; fs.mkdirSync(dir, { recursive: true });
+files.forEach(([n, t]) => fs.writeFileSync(dir + '/' + n, t));
+const zipB64 = await p.evaluate(async () => { const bl = window.UBPcb.zip(window.UBPcb.gerberFiles()); const ab = await bl.arrayBuffer(); let s = ''; new Uint8Array(ab).forEach(c => s += String.fromCharCode(c)); return btoa(s); });
+fs.writeFileSync(dir + '/board.zip', Buffer.from(zipB64, 'base64'));
+await b.close();
