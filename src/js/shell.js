@@ -120,6 +120,7 @@
     ['PCB: DRC (デザインルールチェック)', () => { window.UBPcb.activate(true); window.UBPcb.runDRC(); window.UBPcb.render(); }],
     ['電子工作 計算ツール', () => window.UBCalc.open(), 'T'],
     ['表示テーマを切り替え', () => $('bTheme').click()],
+    ['表示スタイルを切り替え (Android / PC)', () => window.UBSetUI(document.documentElement.classList.contains('md') ? 'classic' : 'md')],
     ['元に戻す', () => A.undo(), 'Ctrl+Z'], ['やり直し', () => A.redo(), 'Ctrl+Y'],
     ['全体表示', () => A.fit(), 'F'],
     ['キーボード ショートカット一覧', () => shortcuts(), '?']

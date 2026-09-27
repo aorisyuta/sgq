@@ -2,9 +2,13 @@ package jp.uniboard.spice;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.res.Configuration;
+import android.graphics.Color;
+import android.os.Build;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.Base64;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.Window;
 import android.webkit.JavascriptInterface;
@@ -36,10 +40,15 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // 端末のダークモードに合わせたテーマ (WebView の prefers-color-scheme もこれに従う)
+        boolean night = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        setTheme(night ? android.R.style.Theme_DeviceDefault_NoActionBar : android.R.style.Theme_DeviceDefault_Light_NoActionBar);
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        getWindow().setStatusBarColor(0xFF0A7A62);
+        int surface = night ? 0xFF0F1512 : 0xFFF5FBF7;
+        applyBars(surface, night ? 0xFF1B211E : 0xFFE9EFEB, !night);
         web = new WebView(this);
+        web.setBackgroundColor(surface);
         setContentView(web);
 
         WebSettings s = web.getSettings();
@@ -127,6 +136,43 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String platform() { return "android"; }
+
+        /** 触感フィードバック: 1 = タップ / 16 = 完了 / 17 = 失敗 */
+        @JavascriptInterface
+        public void haptic(final int kind) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    int k = kind == 16 ? (Build.VERSION.SDK_INT >= 30 ? HapticFeedbackConstants.CONFIRM : HapticFeedbackConstants.VIRTUAL_KEY)
+                            : kind == 17 ? (Build.VERSION.SDK_INT >= 30 ? HapticFeedbackConstants.REJECT : HapticFeedbackConstants.LONG_PRESS)
+                            : HapticFeedbackConstants.KEYBOARD_TAP;
+                    web.performHapticFeedback(k);
+                }
+            });
+        }
+
+        /** ステータスバー・ナビゲーションバーの色を画面 (アプリバー / 下のナビゲーション) に合わせる */
+        @JavascriptInterface
+        public void setSystemBars(final String status, final String nav, final boolean light) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try { applyBars(Color.parseColor(status), Color.parseColor(nav), light); } catch (Exception ignored) { }
+                }
+            });
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void applyBars(int status, int nav, boolean light) {
+        Window w = getWindow();
+        w.setStatusBarColor(status);
+        w.setNavigationBarColor(nav);
+        View d = w.getDecorView();
+        int f = d.getSystemUiVisibility();
+        f = light ? (f | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR) : (f & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        if (Build.VERSION.SDK_INT >= 26) f = light ? (f | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR) : (f & ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        d.setSystemUiVisibility(f);
     }
 
     @Override

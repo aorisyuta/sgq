@@ -15,7 +15,7 @@ SDK = os.environ.get('UB_ANDROID_TOOLS', os.path.join(os.path.dirname(ROOT), 'an
 OUT = os.path.join(ROOT, 'dist')
 WORK = os.path.join(HERE, 'build')
 PKG = 'jp.uniboard.spice'
-VERSION_CODE, VERSION_NAME = 1, '2026.09.27'
+VERSION_CODE, VERSION_NAME = 2, '2026.09.27-m3'
 LABEL = 'UniBoard SPICE'
 MIN_SDK, TARGET_SDK = 24, 34
 MAVEN = 'https://repo1.maven.org/maven2/'
@@ -160,7 +160,7 @@ def main():
         ('application', [A('label', T_STR, LABEL), A('icon', T_REF, 0x7f010000), A('roundIcon', T_REF, 0x7f010000),
                          A('allowBackup', T_BOOL, 0xFFFFFFFF), A('hardwareAccelerated', T_BOOL, 0xFFFFFFFF), A('largeHeap', T_BOOL, 0xFFFFFFFF)], [
             ('activity', [A('name', T_STR, PKG + '.MainActivity'), A('label', T_STR, LABEL), A('exported', T_BOOL, 0xFFFFFFFF),
-                          A('configChanges', T_HEX, 0x0080 | 0x0020 | 0x0010 | 0x0100 | 0x0200 | 0x0400 | 0x0800),   # 回転・画面サイズ・キーボード・ダークモード切替で作り直さない
+                          A('configChanges', T_HEX, 0x0080 | 0x0020 | 0x0010 | 0x0100 | 0x0400 | 0x0800),   # 回転・画面サイズ・キーボードで作り直さない (ダークモード切替ではテーマを選び直すため作り直す)
                           A('windowSoftInputMode', T_HEX, 0x10)], [
                 ('intent-filter', [], [
                     ('action', [A('name', T_STR, 'android.intent.action.MAIN')], []),
