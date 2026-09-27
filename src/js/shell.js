@@ -279,6 +279,28 @@
     const g = body.querySelector('.samples'); if (g) g.appendChild(b);
   }, 0));
 
+  /* ================= ヘッダの折り返し / 起動時のパネル ================= */
+  // ツールが横に収まらないときは 2 段目へ折り返す (横スクロールで隠れるボタンを作らない)
+  const bar = document.querySelector('.bar');
+  let fitQ = 0;
+  function fitBar() {
+    cancelAnimationFrame(fitQ);
+    fitQ = requestAnimationFrame(() => {
+      bar.classList.remove('wrap');
+      const over = [...bar.querySelectorAll('.tools')].some(t => !t.hidden && getComputedStyle(t).visibility !== 'hidden' && t.scrollWidth > t.clientWidth + 1)
+        || bar.scrollWidth > bar.clientWidth + 1;
+      bar.classList.toggle('wrap', over);
+      A.resize(); A.rp();
+    });
+  }
+  window.addEventListener('resize', fitBar);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitBar);
+  const prevTab = H.onTab; H.onTab = t => { if (prevTab) prevTab(t); fitBar(); };
+  fitBar();
+  // スマートフォンでは部品パネル・情報パネルを閉じた状態で始める (画面を覆わないように)
+  if (window.innerWidth <= 640 && S().palOpen) { S().palOpen = false; A.applyPanels(); }
+  if (window.innerWidth <= 1100 && S().inspOpen) { S().inspOpen = false; A.applyPanels(); }
+
   /* ================= 自動保存 ================= */
   const CD = window.CADDoc;
   let last = null;

@@ -38,7 +38,11 @@ kbd{font-family:var(--mono);font-size:10px;padding:1px 5px;border-radius:4px;bor
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 
 /* ---------- トップバー ---------- */
-.bar{height:var(--barH);gap:12px;padding:0 14px;box-shadow:0 1px 0 var(--line)}
+.bar{height:auto;min-height:var(--barH);gap:12px;padding:0 14px;box-shadow:0 1px 0 var(--line)}
+/* ツールが 1 行に収まらないときは 2 段目へ折り返す (隠れて押せないボタンを作らない) */
+.bar.wrap{flex-wrap:wrap;row-gap:6px;padding-block:6px}
+.bar.wrap .sep{display:none}
+.bar.wrap .tools{order:9;flex:1 0 100%;flex-wrap:wrap;overflow-x:visible}
 .brand{align-items:center;gap:9px}
 .brand .logo{width:26px;height:26px;flex:0 0 auto}
 .brand .lg-bg{fill:var(--accent)}
@@ -68,7 +72,7 @@ kbd{font-family:var(--mono);font-size:10px;padding:1px 5px;border-radius:4px;bor
 .ls-in:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
 .ls-in svg{width:15px;height:15px;color:var(--faint);flex:0 0 auto}
 .ls-in input{border:0;background:transparent;outline:0;padding:8px 0;font-size:12.5px;width:100%;min-width:0}
-.ls-cats{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;padding-bottom:1px}
+.ls-cats{display:flex;gap:4px;flex-wrap:wrap}
 .ls-cats::-webkit-scrollbar{display:none}
 .lc{flex:0 0 auto;border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:99px;padding:3px 9px;font-size:11px;cursor:pointer;white-space:nowrap}
 .lc:hover{color:var(--ink);border-color:var(--line2)}
@@ -96,7 +100,12 @@ kbd{font-family:var(--mono);font-size:10px;padding:1px 5px;border-radius:4px;bor
 .pitem{border-radius:8px;background:var(--surface)}
 
 /* ---------- ステージ / インスペクタ ---------- */
-.stage{background:var(--bg)}
+.stage{background:var(--bg);overflow:hidden}
+/* 拡大縮小ボタンは常に右上 (下側はシミュレーション画面・操作バーと重なるため) */
+.zoombox{top:10px!important;bottom:auto!important;right:10px!important}
+/* 操作バーは横スクロールさせずに折り返す */
+.actbar{left:50%!important;transform:translateX(-50%)!important;max-width:calc(100% - 24px)!important;flex-wrap:wrap;justify-content:center;overflow:visible;row-gap:6px}
+.hint{max-width:min(430px,calc(100% - 190px))}
 .stage.docked #cv{bottom:var(--dockH,0px);height:auto}
 .stage.docked .actbar{bottom:calc(var(--dockH,0px) + 14px)}
 .stage.docked .popover{bottom:calc(var(--dockH,0px) + 74px)}
@@ -134,7 +143,7 @@ kbd{font-family:var(--mono);font-size:10px;padding:1px 5px;border-radius:4px;bor
 .dk-head{position:relative;padding-right:46px}
 .dk-body{flex:1 1 auto;min-height:0;position:relative}
 .dk-pane{position:absolute;inset:0;overflow:auto;padding:8px 12px}
-#dkWave{display:flex;flex-direction:column;gap:6px;overflow:hidden}
+#dkWave{display:flex;flex-direction:column;gap:6px;overflow-y:auto}
 #dkWave[hidden]{display:none}
 .wv-legend{display:flex;align-items:center;gap:5px;flex-wrap:wrap;flex:0 0 auto}
 .wv-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:99px;padding:2px 4px 2px 8px;font-family:var(--mono);font-size:11px;cursor:pointer;background:var(--surface2);user-select:none}
@@ -148,11 +157,11 @@ kbd{font-family:var(--mono);font-size:10px;padding:1px 5px;border-radius:4px;bor
 .wv-sp{flex:1}
 .wv-tool{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:3px 9px;font-size:11px;cursor:pointer;color:var(--muted)}
 .wv-tool.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
-.wv-plot{position:relative;flex:1 1 auto;min-height:90px;border-radius:9px;overflow:hidden;border:1px solid var(--line)}
+.wv-plot{position:relative;flex:1 0 auto;min-height:120px;border-radius:9px;overflow:hidden;border:1px solid var(--line)}
 .wv-plot canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair;touch-action:none}
 .wv-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:12.5px;line-height:1.8;padding:12px;background:var(--surface2)}
 .wv-empty[hidden]{display:none}
-.wv-foot{flex:0 0 auto;display:flex;flex-direction:column;gap:5px;max-height:40%;overflow:auto}
+.wv-foot{flex:0 0 auto;display:flex;flex-direction:column;gap:5px}
 .wv-time{display:flex;align-items:center;gap:8px}
 .wv-time input{flex:1;accent-color:var(--accent)}
 .wv-time b{font-family:var(--mono);font-size:11px;min-width:110px}
@@ -209,12 +218,12 @@ body.pcbx-on .palette,body.pcbx-on #schTools,body.pcbx-on #pcbTools{visibility:h
 .cmdk-foot{border-top:1px solid var(--line);padding:7px 14px;font-size:11px;color:var(--faint)}
 
 /* ---------- トースト ---------- */
-.toasts{position:fixed;left:50%;bottom:calc(40px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:80;display:flex;flex-direction:column;gap:6px;align-items:center;pointer-events:none;width:min(520px,calc(100% - 32px))}
+.toasts{position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:80;display:flex;flex-direction:column;gap:6px;align-items:center;pointer-events:none;width:min(520px,calc(100% - 32px))}
 .toast{background:var(--ink);color:var(--surface);padding:9px 14px;border-radius:10px;font-size:12.5px;box-shadow:var(--shadow-lg);animation:tin .2s ease-out;max-width:100%}
 .toast.err{background:var(--crit);color:#fff}
 .toast.ok{background:var(--accent);color:var(--accent-ink)}
-.toast.out{opacity:0;transform:translateY(6px);transition:.3s}
-@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.toast.out{opacity:0;transform:translateY(-6px);transition:.3s}
+@keyframes tin{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
 
 /* ---------- モーダル / 計算ツール ---------- */
 .sheet{border-radius:14px;box-shadow:var(--shadow-lg)}

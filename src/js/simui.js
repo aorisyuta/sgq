@@ -967,6 +967,8 @@
   /* ================= トースト ================= */
   function toast(t, lv) {
     let box = $('toasts'); if (!box) { box = el('div', 'toasts'); box.id = 'toasts'; document.body.appendChild(box); }
+    // 通知はヘッダのすぐ下に出す (下部の操作バーやシミュレーション画面を隠さない)
+    const hb = document.querySelector('.bar'); if (hb) box.style.top = (hb.getBoundingClientRect().bottom + 10) + 'px';
     const d = el('div', 'toast ' + (lv || '')); d.textContent = t; box.appendChild(d);
     setTimeout(() => { d.classList.add('out'); setTimeout(() => d.remove(), 300); }, lv === 'err' ? 5200 : 2600);
   }
