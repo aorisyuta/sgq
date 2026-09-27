@@ -71,7 +71,7 @@
       tab === 'sch' && [IC.all, 'すべて選択', () => $('bAll').click()],
       tab !== 'pcbx' && [IC.info, '情報パネル', () => $('bInsp').click(), $('bInsp').getAttribute('aria-pressed') === 'true' ? '表示中' : ''],
       [IC.theme, '表示テーマ', () => $('bTheme').click(), themeName()],
-      [IC.style, 'PC 用の表示に切り替え', () => window.UBSetUI('classic')]
+      !D.classList.contains('android') && !/Android/i.test(navigator.userAgent || '') && [IC.style, 'PC 用の表示に切り替え', () => window.UBSetUI('classic')]
     ].filter(x => x !== false);
   }
   function openMenu() {
