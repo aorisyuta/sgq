@@ -1125,8 +1125,9 @@ body.pcbx-on .palette,body.pcbx-on #schTools,body.pcbx-on #pcbTools{visibility:h
   def('BUZ', {
     name: 'ブザー', cat: 'mech', prefix: 'BZ', val: '5V',
     pins: [{ n: 1, x: -20, y: 0, name: '+' }, { n: 2, x: 20, y: 0, name: '-' }],
-    g: [L(-20, 0, -12, 0), AR(0, 0, 14, P * 0.5, P * 1.5), L(-12, -14, -12, 14),
-        L(12, 0, 20, 0), TX(-4, 4, '+', 9)],
+    // ドーム (半円) と底辺、両端から端子。上に音を表す弧
+    g: [L(-20, 0, 20, 0), AR(0, 0, 13, P, 2 * P), AR(0, 0, 8, P * 1.2, P * 1.8),
+        TX(-17, -5, '+', 9)],
     props: { span: 3 }, fp: c => fpRadial(c.props.span || 3, 3.2)
   });
   def('SPK', {
@@ -5710,14 +5711,29 @@ body.pcbx-on .palette,body.pcbx-on #schTools,body.pcbx-on #pcbTools{visibility:h
   }
 
   /* ---------- 基板描画 ---------- */
-  function bodyShape(pen, b, shape, col, alpha, fill, notch) {
+  function bodyShape(pen, b, shape, col, alpha, fill, notch, rot, mirror) {
     const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
     const paint = (fillCol, strokeCol, a) => {
       const o = { fill: fillCol, stroke: strokeCol, sw: .075, w: .075, alpha: a, rx: .2 };
       if (shape === 'circle') pen.circle(cx, cy, Math.max(b.w, b.h) / 2, o);
       else if (shape === 'to92') {
-        pen.poly([b.x, b.y + b.h, b.x, cy, b.x + b.w, cy, b.x + b.w, b.y + b.h], o);
-        if (strokeCol) pen.arc(cx, cy, b.w / 2, Math.PI, Math.PI * 2, { stroke: strokeCol, w: .075, alpha: a });
+        // TO-92 の D 形: 足の並びに沿った平らな面 + 反対側の丸み。部品の向き (rot) に合わせて丸みの向きを変える
+        const r = (((rot || 0) % 360) + 360) % 360, vert = b.h > b.w;
+        let dir = vert ? (r === 270 ? 'L' : 'R') : (r === 180 ? 'D' : 'U');
+        if (mirror && (dir === 'L' || dir === 'R')) dir = dir === 'L' ? 'R' : 'L';
+        // 足の並び方向の半径 = 本体の半分、丸みの深さ = 約 1 穴 (実物の TO-92 と同じくらい)
+        const RL = (vert ? b.h : b.w) / 2, RD = Math.min(RL, 1.0), pts = [], N = 18;
+        const a0 = { U: Math.PI, D: 0, R: -Math.PI / 2, L: Math.PI / 2 }[dir];
+        // 平らな面の両端 → 丸み → 反対の端 の順に一周する
+        const start = { U: [b.x, b.y + b.h], D: [b.x + b.w, b.y], R: [b.x, b.y], L: [b.x + b.w, b.y + b.h] }[dir];
+        const end = { U: [b.x + b.w, b.y + b.h], D: [b.x, b.y], R: [b.x, b.y + b.h], L: [b.x + b.w, b.y] }[dir];
+        pts.push(start[0], start[1]);
+        for (let i = 0; i <= N; i++) {
+          const t = a0 + Math.PI * i / N, ct = Math.cos(t), st = Math.sin(t);
+          pts.push(cx + (vert ? RD : RL) * ct, cy + (vert ? RL : RD) * st);
+        }
+        pts.push(end[0], end[1]);
+        pen.poly(pts, Object.assign({}, o, { close: true }));
       } else pen.rect(b.x, b.y, b.w, b.h, o);
     };
     if (fill) paint(fill, null, alpha * .45);
@@ -5920,7 +5936,7 @@ body.pcbx-on .palette,body.pcbx-on #schTools,body.pcbx-on #pcbTools{visibility:h
           ? (dx < 0 ? { x: bb.x, y: cyb, a0: -P / 2, a1: P / 2 } : { x: bb.x + bb.w, y: cyb, a0: P / 2, a1: 3 * P / 2 })
           : (dy < 0 ? { x: cxb, y: bb.y, a0: 0, a1: P } : { x: cxb, y: bb.y + bb.h, a0: P, a1: 2 * P });
       }
-      bodyShape(pen, bb, sh.body.shape, TH.ink, aBody * .85, o.view === 'bottom' ? null : TH.surface2, notch);
+      bodyShape(pen, bb, sh.body.shape, TH.ink, aBody * .85, o.view === 'bottom' ? null : TH.surface2, notch, sh.rot, !!o.mirror);
       // 1番ピンマーク
       const p0 = sh.pads[0];
       pen.circle(X(c.pos.c + p0.c), c.pos.r + p0.r, .14, { fill: TH.ink, alpha: aBody * .75 });
