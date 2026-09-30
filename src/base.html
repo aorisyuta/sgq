@@ -2205,6 +2205,89 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
     return out;
   }
 
+  /* ---------------- 手動調整: 部品を動かした後の引き直し ----------------
+     動かした部品につながるネットと、新しい位置とぶつかる配線だけを外して引き直す (他の配線はそのまま)。
+     引き直せなければ全体を配線し直す */
+  function routeSummary(prj, routes, grid) {
+    let totalLen = 0, vias = 0, forced = 0, topLen = 0, botLen = 0;
+    routes.forEach(r => {
+      totalLen += r.len; vias += r.vias.length; forced += r.jumpers.length;
+      r.segs.forEach(s => { const d = hyp(s.c2 - s.c1, s.r2 - s.r1); if (s.l === 1) topLen += d; else botLen += d; });
+    });
+    const nets = prj.nets.filter(n => (n.padCells || []).length >= 2);
+    const unrouted = nets.filter(n => !routes.has(n.index)).length;
+    return { grid, routes, stats: { forced }, metrics: { totalLen, vias, forced, topLen, botLen, nets: nets.length, routed: nets.length - unrouted, unrouted } };
+  }
+  function rerouteAfterEdit(prj, board, old, options, changed) {
+    const opt = Object.assign({ bend: 7, topExtra: 5, bodyPenalty: 26, viaCost: 55, hWeight: 1.15, diagonal: true, chain: true, railsFirst: true, diagExtra: 6 }, options || {});
+    const grid = makeGrid(board.cols, board.rows), cols = board.cols, NC = grid.NC;
+    stampObstacles(grid, prj); stampPads(grid, prj);
+    if (board.keepout) for (const k of board.keepout) if (k >= 0 && k < NC && grid.padNet[k] < 0) { grid.node[0][k] = -2; grid.node[1][k] = -2; }
+    const touched = new Set();
+    prj.nets.forEach(n => { if (n.pads.some(p => changed.has(p.ci))) touched.add(n.index); });
+    const routes = new Map();
+    const inB = (c, r) => c >= 0 && r >= 0 && c < cols && r < board.rows;
+    // 残す配線を 1 本ずつ置き直す (ぶつかったら外す)
+    const tryKeep = (ni, rec) => {
+      const cells = [], diags = [];
+      for (const sg of rec.segs) {
+        const dc = Math.sign(sg.c2 - sg.c1), dr = Math.sign(sg.r2 - sg.r1);
+        const n = Math.max(Math.abs(sg.c2 - sg.c1), Math.abs(sg.r2 - sg.r1));
+        if (dc && dr && Math.abs(sg.c2 - sg.c1) !== Math.abs(sg.r2 - sg.r1)) return false;   // 45° 以外は扱わない
+        let c = sg.c1, r = sg.r1;
+        cells.push([sg.l, c, r]);
+        for (let k = 0; k < n; k++) {
+          if (dc && dr) diags.push([sg.l, Math.min(r, r + dr) * cols + Math.min(c, c + dc), (dc * dr < 0) ? 1 : 2]);
+          c += dc; r += dr; cells.push([sg.l, c, r]);
+        }
+      }
+      rec.vias.forEach(i => { cells.push([0, i % cols, (i / cols) | 0]); cells.push([1, i % cols, (i / cols) | 0]); });
+      for (const [l, c, r] of cells) {
+        if (!inB(c, r)) return false;
+        const i = r * cols + c;
+        if (grid.padNet[i] >= 0 && grid.padNet[i] !== ni) return false;
+        const o = grid.node[l][i]; if (o !== -1 && o !== ni) return false;
+        if (l === 1 && (grid.solid[i] || grid.padNet[i] >= 0) && !rec.vias.includes(i)) {
+          // 部品面ジャンパは部品の下・ピン穴を通れない (端のパッドは除く)
+          const end = rec.segs.some(sg => sg.l === 1 && ((sg.c1 === c && sg.r1 === r) || (sg.c2 === c && sg.r2 === r)));
+          if (grid.solid[i] || !end) return false;
+        }
+      }
+      for (const [l, cell, t] of diags) if (grid.diag[l][cell] !== 0 && !(grid.diag[l][cell] === t && grid.diagNet[l][cell] === ni)) return false;
+      const nodes = [], dl = [];
+      for (const [l, c, r] of cells) { const i = r * cols + c; if (grid.node[l][i] === -1) { grid.node[l][i] = ni; nodes.push(l * NC + i); } }
+      for (const [l, cell, t] of diags) if (grid.diag[l][cell] === 0) { grid.diag[l][cell] = t; grid.diagNet[l][cell] = ni; dl.push([l, cell]); }
+      routes.set(ni, Object.assign({}, rec, { nodes, diags: dl }));
+      return true;
+    };
+    const redo = [];
+    const order = [...old.routes.keys()].sort((a, b) => a - b);
+    for (const ni of order) {
+      if (touched.has(ni) || !prj.nets[ni] || !tryKeep(ni, old.routes.get(ni))) redo.push(ni);
+    }
+    prj.nets.forEach(n => { if ((n.padCells || []).length >= 2 && !routes.has(n.index) && !redo.includes(n.index)) redo.push(n.index); });
+    const rank = n => n.cls === 'gnd' ? 0 : n.rail ? 1 : 2;
+    redo.sort((a, b) => rank(prj.nets[a]) - rank(prj.nets[b]));
+    const failed = [];
+    for (const ni of redo) {
+      const n = prj.nets[ni]; if ((n.padCells || []).length < 2) continue;
+      const rec = routeNet(grid, n, opt, false);
+      if (rec) routes.set(ni, rec); else failed.push(ni);
+    }
+    let res = routeSummary(prj, routes, grid);
+    res.stats.partial = true; res.stats.rerouted = redo.length;
+    if (failed.length) {
+      // 部分的に引き直せない → 全体を配線し直し、良い方を採る
+      const full = routeAll(prj, board, Object.assign({}, opt, { noForced: true, maxPass: 6 }));
+      if ((full.metrics.unrouted || 0) < failed.length) { full.stats.rerouted = 'all'; res = full; }
+      else if (!opt.noForced) {
+        for (const ni of failed) { const rec = routeNet(grid, prj.nets[ni], opt, true); if (rec) routes.set(ni, rec); }
+        res = routeSummary(prj, routes, grid); res.stats.partial = true; res.stats.rerouted = redo.length;
+      }
+    }
+    return res;
+  }
+
   /* ---------------- 美しい配線: 機能ブロック / 一筆書きの順番 / 評価 ---------------- */
   const octile = (dx, dy) => { dx = Math.abs(dx); dy = Math.abs(dy); return Math.max(dx, dy) + 0.4142 * Math.min(dx, dy); };
   // 同じ働きをする部品のまとまり: 能動部品 (IC・トランジスタ等) を核に、信号線でつながる受動部品を集める
@@ -2332,7 +2415,7 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
   global.CADBoard = {
     rotFp, buildProject, netClass, autoBoardSize, compactBoard, cornerKeepout, makePlacer, makeGrid, routeAll,
     stripConvert, verify, wiringList, colName, holeName, stampObstacles, stampPads,
-    functionalGroups, chainOrder, beautyMetrics, octile
+    functionalGroups, chainOrder, beautyMetrics, octile, rerouteAfterEdit
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 
@@ -3221,6 +3304,7 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
         mirror: S.boardView === 'bottom', highlightNet: S.hiNet, cursor: S.hoverHole, mono: S.pcbMono,
         blocks: S.cfg.blocks !== false && !S.pcbMono && S.board.beauty && S.board.beauty.blocks.length >= 2 ? S.board.beauty.blocks : null
       });
+      if (window.UBHooks && window.UBHooks.boardOverlay) { try { window.UBHooks.boardOverlay(pen, ctx, v.z); } catch (e) { console.error(e); } }
     }
     ctx.restore();
     if (S.tab === 'pcb' && !S.board) {
@@ -3427,7 +3511,7 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
     const add = e.shiftKey || S.multi;
     tap = { sx, sy, wx, wy, moved: false, add, handled: false, toggle: null };
     panning = { sx, sy, vx: V().x, vy: V().y };
-    if (S.tab === 'pcb') return;
+    if (S.tab === 'pcb') { const HK = window.UBHooks; if (S.board && HK && HK.boardDown && HK.boardDown(wx, wy, e)) panning = null; return; }
     if (!S.place && S.tool === 'sel') {
       const hd = hitHandle(wx, wy);
       if (hd) { panning = null; tap = null; startHandleDrag(hd, wx, wy); return; }
@@ -3473,6 +3557,7 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
       return;
     }
     if (S.marquee) { S.marquee.x1 = wx; S.marquee.y1 = wy; rp(); return; }
+    if (S.tab === 'pcb' && window.UBHooks && window.UBHooks.boardMove && window.UBHooks.boardMove(wx, wy, !!(tap && tap.moved))) return;
     if (panning && (!tap || tap.moved)) {
       const v = V(); v.x = panning.vx + (sx - panning.sx); v.y = panning.vy + (sy - panning.sy);
       S.userMoved = true; rp(); return;
@@ -3494,7 +3579,7 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
   function endPointer(e) {
     ptrs.delete(e.pointerId);
     if (ptrs.size < 2) gesture = null;
-    if (ptrs.size > 0) { panning = null; tap = null; S.drag = null; S.marquee = null; rp(); return; }
+    if (ptrs.size > 0) { panning = null; tap = null; S.drag = null; S.marquee = null; if (window.UBHooks && window.UBHooks.boardCancel) window.UBHooks.boardCancel(); rp(); return; }
     if (S.marquee) {
       const m = S.marquee, x0 = Math.min(m.x0, m.x1), x1 = Math.max(m.x0, m.x1), y0 = Math.min(m.y0, m.y1), y1 = Math.max(m.y0, m.y1);
       if (Math.abs(x1 - x0) > 3 || Math.abs(y1 - y0) > 3) {
@@ -3520,6 +3605,7 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
     const wasDrag = S.drag && S.drag.moved;
     const t = tap; S.drag = null; panning = null; tap = null;
     if (wasDrag) { pruneJunctions(); refreshNets(); panels(); }
+    if (S.tab === 'pcb' && window.UBHooks && window.UBHooks.boardUp) window.UBHooks.boardUp(t);
     if (t && !t.moved) handleTap(t);
     rp();
   }
@@ -4010,7 +4096,7 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
   /* ================= ヒント ================= */
   function hint() {
     const h = $('hint');
-    if (S.tab === 'pcb') { h.innerHTML = S.board ? 'パッドを<b>クリック</b>でネット強調 / <b>ドラッグ</b>でパン / <b>ホイール</b>でズーム' : ''; return; }
+    if (S.tab === 'pcb') { h.innerHTML = S.board ? '<b>部品をドラッグ</b>で移動 (配線は自動で引き直し) / 選んで <b>R</b> で回転 / パッドを<b>クリック</b>でネット強調 / 何もない所をドラッグでパン' : ''; return; }
     if (S.place) h.innerHTML = `<b>${S.placeLib ? S.placeLib.name.replace(/[<>&]/g, '') : C1.SYM[S.place] ? C1.SYM[S.place].name : 'カスタム部品'}</b> を配置 — 置きたい場所をタップ。下のバーで回転・終了`;
     else if (S.tool === 'wire') h.innerHTML = '<b>配線</b> — 始点をタップ → 終点をタップ。折れ方向は下のバーで切替';
     else if (S.tool === 'marq') h.innerHTML = '<b>範囲選択</b> — なぞった四角の中の部品・配線をまとめて選択';
@@ -4311,13 +4397,13 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
       requestAnimationFrame(stepPlace);
     }
     function route(prj, board, seed) {
-      let result, strip = null, problems;
+      let result, strip = null, problems, ropt = null;
       if (board.type === 'strip') {
         strip = CB.stripConvert(prj, board);
         result = { routes: new Map(), stats: {}, grid: null, metrics: { totalLen: 0, vias: 0, forced: strip.jumpers.length, topLen: 0, botLen: 0, nets: prj.nets.length, routed: prj.nets.length, unrouted: 0 } };
         problems = CB.verify(prj, board, result, strip);
       } else {
-        const ropt = {
+        ropt = {
           topExtra: S.cfg.policy === 'jumper' ? -2 : S.cfg.policy === 'solder' ? 15 : 5,
           viaCost: S.cfg.policy === 'jumper' ? 30 : 55,
           maxPass: 5 + S.cfg.quality * 3 + (noForced ? 3 : 0), seed, noForced,
@@ -4327,7 +4413,7 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
         result = CB.routeAll(prj, board, ropt);
         problems = CB.verify(prj, board, result, null);
       }
-      const run = { prj, board, result, strip, problems, nets: prjNets, seed };
+      const run = { prj, board, result, strip, problems, nets: prjNets, seed, ropt: board.type === 'strip' ? null : ropt };
       run.topRuns = topRunsOf(result);
       run.beauty = CB.beautyMetrics(prj, board, result);
       const score = r => (r.result.metrics.unrouted || 0) * 1e6 + r.board.cols * r.board.rows * 10 + (r.topRuns || 0) * 400 + r.result.metrics.totalLen

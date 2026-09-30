@@ -2910,6 +2910,89 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
     return out;
   }
 
+  /* ---------------- 手動調整: 部品を動かした後の引き直し ----------------
+     動かした部品につながるネットと、新しい位置とぶつかる配線だけを外して引き直す (他の配線はそのまま)。
+     引き直せなければ全体を配線し直す */
+  function routeSummary(prj, routes, grid) {
+    let totalLen = 0, vias = 0, forced = 0, topLen = 0, botLen = 0;
+    routes.forEach(r => {
+      totalLen += r.len; vias += r.vias.length; forced += r.jumpers.length;
+      r.segs.forEach(s => { const d = hyp(s.c2 - s.c1, s.r2 - s.r1); if (s.l === 1) topLen += d; else botLen += d; });
+    });
+    const nets = prj.nets.filter(n => (n.padCells || []).length >= 2);
+    const unrouted = nets.filter(n => !routes.has(n.index)).length;
+    return { grid, routes, stats: { forced }, metrics: { totalLen, vias, forced, topLen, botLen, nets: nets.length, routed: nets.length - unrouted, unrouted } };
+  }
+  function rerouteAfterEdit(prj, board, old, options, changed) {
+    const opt = Object.assign({ bend: 7, topExtra: 5, bodyPenalty: 26, viaCost: 55, hWeight: 1.15, diagonal: true, chain: true, railsFirst: true, diagExtra: 6 }, options || {});
+    const grid = makeGrid(board.cols, board.rows), cols = board.cols, NC = grid.NC;
+    stampObstacles(grid, prj); stampPads(grid, prj);
+    if (board.keepout) for (const k of board.keepout) if (k >= 0 && k < NC && grid.padNet[k] < 0) { grid.node[0][k] = -2; grid.node[1][k] = -2; }
+    const touched = new Set();
+    prj.nets.forEach(n => { if (n.pads.some(p => changed.has(p.ci))) touched.add(n.index); });
+    const routes = new Map();
+    const inB = (c, r) => c >= 0 && r >= 0 && c < cols && r < board.rows;
+    // 残す配線を 1 本ずつ置き直す (ぶつかったら外す)
+    const tryKeep = (ni, rec) => {
+      const cells = [], diags = [];
+      for (const sg of rec.segs) {
+        const dc = Math.sign(sg.c2 - sg.c1), dr = Math.sign(sg.r2 - sg.r1);
+        const n = Math.max(Math.abs(sg.c2 - sg.c1), Math.abs(sg.r2 - sg.r1));
+        if (dc && dr && Math.abs(sg.c2 - sg.c1) !== Math.abs(sg.r2 - sg.r1)) return false;   // 45° 以外は扱わない
+        let c = sg.c1, r = sg.r1;
+        cells.push([sg.l, c, r]);
+        for (let k = 0; k < n; k++) {
+          if (dc && dr) diags.push([sg.l, Math.min(r, r + dr) * cols + Math.min(c, c + dc), (dc * dr < 0) ? 1 : 2]);
+          c += dc; r += dr; cells.push([sg.l, c, r]);
+        }
+      }
+      rec.vias.forEach(i => { cells.push([0, i % cols, (i / cols) | 0]); cells.push([1, i % cols, (i / cols) | 0]); });
+      for (const [l, c, r] of cells) {
+        if (!inB(c, r)) return false;
+        const i = r * cols + c;
+        if (grid.padNet[i] >= 0 && grid.padNet[i] !== ni) return false;
+        const o = grid.node[l][i]; if (o !== -1 && o !== ni) return false;
+        if (l === 1 && (grid.solid[i] || grid.padNet[i] >= 0) && !rec.vias.includes(i)) {
+          // 部品面ジャンパは部品の下・ピン穴を通れない (端のパッドは除く)
+          const end = rec.segs.some(sg => sg.l === 1 && ((sg.c1 === c && sg.r1 === r) || (sg.c2 === c && sg.r2 === r)));
+          if (grid.solid[i] || !end) return false;
+        }
+      }
+      for (const [l, cell, t] of diags) if (grid.diag[l][cell] !== 0 && !(grid.diag[l][cell] === t && grid.diagNet[l][cell] === ni)) return false;
+      const nodes = [], dl = [];
+      for (const [l, c, r] of cells) { const i = r * cols + c; if (grid.node[l][i] === -1) { grid.node[l][i] = ni; nodes.push(l * NC + i); } }
+      for (const [l, cell, t] of diags) if (grid.diag[l][cell] === 0) { grid.diag[l][cell] = t; grid.diagNet[l][cell] = ni; dl.push([l, cell]); }
+      routes.set(ni, Object.assign({}, rec, { nodes, diags: dl }));
+      return true;
+    };
+    const redo = [];
+    const order = [...old.routes.keys()].sort((a, b) => a - b);
+    for (const ni of order) {
+      if (touched.has(ni) || !prj.nets[ni] || !tryKeep(ni, old.routes.get(ni))) redo.push(ni);
+    }
+    prj.nets.forEach(n => { if ((n.padCells || []).length >= 2 && !routes.has(n.index) && !redo.includes(n.index)) redo.push(n.index); });
+    const rank = n => n.cls === 'gnd' ? 0 : n.rail ? 1 : 2;
+    redo.sort((a, b) => rank(prj.nets[a]) - rank(prj.nets[b]));
+    const failed = [];
+    for (const ni of redo) {
+      const n = prj.nets[ni]; if ((n.padCells || []).length < 2) continue;
+      const rec = routeNet(grid, n, opt, false);
+      if (rec) routes.set(ni, rec); else failed.push(ni);
+    }
+    let res = routeSummary(prj, routes, grid);
+    res.stats.partial = true; res.stats.rerouted = redo.length;
+    if (failed.length) {
+      // 部分的に引き直せない → 全体を配線し直し、良い方を採る
+      const full = routeAll(prj, board, Object.assign({}, opt, { noForced: true, maxPass: 6 }));
+      if ((full.metrics.unrouted || 0) < failed.length) { full.stats.rerouted = 'all'; res = full; }
+      else if (!opt.noForced) {
+        for (const ni of failed) { const rec = routeNet(grid, prj.nets[ni], opt, true); if (rec) routes.set(ni, rec); }
+        res = routeSummary(prj, routes, grid); res.stats.partial = true; res.stats.rerouted = redo.length;
+      }
+    }
+    return res;
+  }
+
   /* ---------------- 美しい配線: 機能ブロック / 一筆書きの順番 / 評価 ---------------- */
   const octile = (dx, dy) => { dx = Math.abs(dx); dy = Math.abs(dy); return Math.max(dx, dy) + 0.4142 * Math.min(dx, dy); };
   // 同じ働きをする部品のまとまり: 能動部品 (IC・トランジスタ等) を核に、信号線でつながる受動部品を集める
@@ -3037,7 +3120,7 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
   global.CADBoard = {
     rotFp, buildProject, netClass, autoBoardSize, compactBoard, cornerKeepout, makePlacer, makeGrid, routeAll,
     stripConvert, verify, wiringList, colName, holeName, stampObstacles, stampPads,
-    functionalGroups, chainOrder, beautyMetrics, octile
+    functionalGroups, chainOrder, beautyMetrics, octile, rerouteAfterEdit
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 
@@ -6721,6 +6804,7 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
         mirror: S.boardView === 'bottom', highlightNet: S.hiNet, cursor: S.hoverHole, mono: S.pcbMono,
         blocks: S.cfg.blocks !== false && !S.pcbMono && S.board.beauty && S.board.beauty.blocks.length >= 2 ? S.board.beauty.blocks : null
       });
+      if (window.UBHooks && window.UBHooks.boardOverlay) { try { window.UBHooks.boardOverlay(pen, ctx, v.z); } catch (e) { console.error(e); } }
     }
     ctx.restore();
     if (S.tab === 'pcb' && !S.board) {
@@ -6927,7 +7011,7 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
     const add = e.shiftKey || S.multi;
     tap = { sx, sy, wx, wy, moved: false, add, handled: false, toggle: null };
     panning = { sx, sy, vx: V().x, vy: V().y };
-    if (S.tab === 'pcb') return;
+    if (S.tab === 'pcb') { const HK = window.UBHooks; if (S.board && HK && HK.boardDown && HK.boardDown(wx, wy, e)) panning = null; return; }
     if (!S.place && S.tool === 'sel') {
       const hd = hitHandle(wx, wy);
       if (hd) { panning = null; tap = null; startHandleDrag(hd, wx, wy); return; }
@@ -6973,6 +7057,7 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
       return;
     }
     if (S.marquee) { S.marquee.x1 = wx; S.marquee.y1 = wy; rp(); return; }
+    if (S.tab === 'pcb' && window.UBHooks && window.UBHooks.boardMove && window.UBHooks.boardMove(wx, wy, !!(tap && tap.moved))) return;
     if (panning && (!tap || tap.moved)) {
       const v = V(); v.x = panning.vx + (sx - panning.sx); v.y = panning.vy + (sy - panning.sy);
       S.userMoved = true; rp(); return;
@@ -6994,7 +7079,7 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
   function endPointer(e) {
     ptrs.delete(e.pointerId);
     if (ptrs.size < 2) gesture = null;
-    if (ptrs.size > 0) { panning = null; tap = null; S.drag = null; S.marquee = null; rp(); return; }
+    if (ptrs.size > 0) { panning = null; tap = null; S.drag = null; S.marquee = null; if (window.UBHooks && window.UBHooks.boardCancel) window.UBHooks.boardCancel(); rp(); return; }
     if (S.marquee) {
       const m = S.marquee, x0 = Math.min(m.x0, m.x1), x1 = Math.max(m.x0, m.x1), y0 = Math.min(m.y0, m.y1), y1 = Math.max(m.y0, m.y1);
       if (Math.abs(x1 - x0) > 3 || Math.abs(y1 - y0) > 3) {
@@ -7020,6 +7105,7 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
     const wasDrag = S.drag && S.drag.moved;
     const t = tap; S.drag = null; panning = null; tap = null;
     if (wasDrag) { pruneJunctions(); refreshNets(); panels(); }
+    if (S.tab === 'pcb' && window.UBHooks && window.UBHooks.boardUp) window.UBHooks.boardUp(t);
     if (t && !t.moved) handleTap(t);
     rp();
   }
@@ -7510,7 +7596,7 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
   /* ================= ヒント ================= */
   function hint() {
     const h = $('hint');
-    if (S.tab === 'pcb') { h.innerHTML = S.board ? 'パッドを<b>クリック</b>でネット強調 / <b>ドラッグ</b>でパン / <b>ホイール</b>でズーム' : ''; return; }
+    if (S.tab === 'pcb') { h.innerHTML = S.board ? '<b>部品をドラッグ</b>で移動 (配線は自動で引き直し) / 選んで <b>R</b> で回転 / パッドを<b>クリック</b>でネット強調 / 何もない所をドラッグでパン' : ''; return; }
     if (S.place) h.innerHTML = `<b>${S.placeLib ? S.placeLib.name.replace(/[<>&]/g, '') : C1.SYM[S.place] ? C1.SYM[S.place].name : 'カスタム部品'}</b> を配置 — 置きたい場所をタップ。下のバーで回転・終了`;
     else if (S.tool === 'wire') h.innerHTML = '<b>配線</b> — 始点をタップ → 終点をタップ。折れ方向は下のバーで切替';
     else if (S.tool === 'marq') h.innerHTML = '<b>範囲選択</b> — なぞった四角の中の部品・配線をまとめて選択';
@@ -7811,13 +7897,13 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
       requestAnimationFrame(stepPlace);
     }
     function route(prj, board, seed) {
-      let result, strip = null, problems;
+      let result, strip = null, problems, ropt = null;
       if (board.type === 'strip') {
         strip = CB.stripConvert(prj, board);
         result = { routes: new Map(), stats: {}, grid: null, metrics: { totalLen: 0, vias: 0, forced: strip.jumpers.length, topLen: 0, botLen: 0, nets: prj.nets.length, routed: prj.nets.length, unrouted: 0 } };
         problems = CB.verify(prj, board, result, strip);
       } else {
-        const ropt = {
+        ropt = {
           topExtra: S.cfg.policy === 'jumper' ? -2 : S.cfg.policy === 'solder' ? 15 : 5,
           viaCost: S.cfg.policy === 'jumper' ? 30 : 55,
           maxPass: 5 + S.cfg.quality * 3 + (noForced ? 3 : 0), seed, noForced,
@@ -7827,7 +7913,7 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
         result = CB.routeAll(prj, board, ropt);
         problems = CB.verify(prj, board, result, null);
       }
-      const run = { prj, board, result, strip, problems, nets: prjNets, seed };
+      const run = { prj, board, result, strip, problems, nets: prjNets, seed, ropt: board.type === 'strip' ? null : ropt };
       run.topRuns = topRunsOf(result);
       run.beauty = CB.beautyMetrics(prj, board, result);
       const score = r => (r.result.metrics.unrouted || 0) * 1e6 + r.board.cols * r.board.rows * 10 + (r.topRuns || 0) * 400 + r.result.metrics.totalLen
@@ -11386,6 +11472,222 @@ html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
   setInterval(() => {
     try { const cur = CD.serialize(S().doc); if (cur !== last) { last = cur; store.set('autosave', { doc: cur, at: Date.now() }); } } catch (e) { }
   }, 2500);
+})();
+
+</script>
+<script>
+/* ---- perf-edit.js ---- */
+/* =====================================================================
+   UniBoard SPICE — 蛇の目基板パターン図の手動調整
+   出力された基板の部品をドラッグで移動・R で回転できる (部品の追加・削除はしない)。
+   動かすたびに、その部品につながる配線と新しい位置とぶつかる配線だけを引き直す。
+   ===================================================================== */
+(function () {
+  'use strict';
+  const UB = window.UniBoard, A = UB.api, S = () => UB.state, CB = window.CADBoard;
+  const $ = id => document.getElementById(id);
+  const el = A.el;
+  const H = window.UBHooks = window.UBHooks || {};
+  const toast = (t, l) => window.UBToast && window.UBToast(t, l);
+
+  const E = { sel: -1, drag: null, undo: [], redo: [], ref: null };
+  const rotI = r => ((r / 90) | 0) & 3;
+  const shapeOf = (c, pos) => c.rots[rotI((pos || c.pos).rot)];
+  const B = () => S().board;
+
+  // 別の基板が出力されたら選択と履歴を捨てる
+  function sync() {
+    if (E.ref !== B()) { E.ref = B(); E.sel = -1; E.drag = null; E.undo = []; E.redo = []; }
+  }
+  function hole(wx, wy) {
+    const b = B().board; let c = Math.round(wx); const r = Math.round(wy);
+    if (S().boardView === 'bottom') c = b.cols - 1 - c;
+    return [c, r];
+  }
+  function compAt(c, r) {
+    const comps = B().prj.comps; let best = -1, area = Infinity;
+    comps.forEach((k, i) => {
+      const s = shapeOf(k);
+      if (c >= k.pos.c && c < k.pos.c + s.w && r >= k.pos.r && r < k.pos.r + s.h && s.w * s.h < area) { area = s.w * s.h; best = i; }
+    });
+    return best;
+  }
+  // 置けるか: 基板の内側・他の部品と重ならない・四隅の禁止穴を避ける
+  function check(ci, pos) {
+    const st = B(), b = st.board, comp = st.prj.comps[ci], s = shapeOf(comp, pos);
+    if (pos.c < 0 || pos.r < 0 || pos.c + s.w > b.cols || pos.r + s.h > b.rows) return '基板の外にはみ出します';
+    const occ = new Set();
+    st.prj.comps.forEach((k, i) => { if (i === ci) return; const q = shapeOf(k); q.cells.forEach(([dc, dr]) => occ.add((k.pos.r + dr) * b.cols + k.pos.c + dc)); });
+    const ko = new Set(b.keepout || []);
+    for (const [dc, dr] of s.cells) { const i = (pos.r + dr) * b.cols + pos.c + dc; if (occ.has(i)) return '他の部品と重なります'; if (ko.has(i)) return '四隅の取付穴の場所です'; }
+    return null;
+  }
+
+  function snapshot() {
+    const r = B();
+    return { pos: r.prj.comps.map(c => Object.assign({}, c.pos)), result: r.result, strip: r.strip, problems: r.problems, beauty: r.beauty, note: r.note, noteLv: r.noteLv, sel: E.sel };
+  }
+  function restore(sn) {
+    const r = B();
+    r.prj.comps.forEach((c, i) => { c.pos = Object.assign({}, sn.pos[i]); });
+    Object.assign(r, { result: sn.result, strip: sn.strip, problems: sn.problems, beauty: sn.beauty, note: sn.note, noteLv: sn.noteLv });
+    E.sel = sn.sel;
+  }
+  function refresh() { S().hiNet = null; A.panels(); A.rp(); bar(); }
+
+  /* 部品の位置を変えて配線を引き直す */
+  function apply(ci, pos, what) {
+    const r = B(), comp = r.prj.comps[ci];
+    E.undo.push(snapshot()); E.redo = [];
+    if (E.undo.length > 60) E.undo.shift();
+    comp.pos = { c: pos.c, r: pos.r, rot: pos.rot };
+    const t0 = performance.now();
+    let msg;
+    if (r.board.type === 'strip') {
+      r.strip = CB.stripConvert(r.prj, r.board);
+      r.result = Object.assign({}, r.result, { metrics: Object.assign({}, r.result.metrics, { forced: r.strip.jumpers.length }) });
+      r.problems = CB.verify(r.prj, r.board, r.result, r.strip);
+      msg = 'パターンカットとジャンパを計算し直しました';
+    } else {
+      const opt = Object.assign({}, r.ropt || {}, { maxPass: 6 });
+      if (S().cfg.beauty === false && !r.ropt) Object.assign(opt, { chain: false, railsFirst: false, diagExtra: 0 });
+      const res = CB.rerouteAfterEdit(r.prj, r.board, r.result, opt, new Set([ci]));
+      r.result = res;
+      r.problems = CB.verify(r.prj, r.board, res, null);
+      msg = res.stats.rerouted === 'all' ? '配線をすべて引き直しました' : `関係する ${res.stats.rerouted} ネットの配線を引き直しました`;
+    }
+    if (S().cfg.beauty !== false && !r.prj.groups) CB.functionalGroups(r.prj);
+    r.beauty = CB.beautyMetrics(r.prj, r.board, r.result);
+    const un = r.result.metrics.unrouted || 0;
+    r.edited = true;
+    r.note = `手動で調整しました (${comp.ref} を${what})。${msg}` + (un ? `。${un} ネットが未配線です — 部品を少し離してください` : '') + ` (${Math.round(performance.now() - t0)} ms)`;
+    r.noteLv = un ? 'warn' : 'ok';
+    refresh();
+    if (un) toast(`${un} ネットを配線しきれませんでした。部品を少し離すか「元に戻す」を押してください`, 'err');
+  }
+
+  function rotate(ci) {
+    sync(); const r = B(); if (!r || ci < 0) return;
+    const c = r.prj.comps[ci], s0 = shapeOf(c), rot = (c.pos.rot + 90) % 360, s1 = c.rots[rotI(rot)];
+    const cx = c.pos.c + (s0.w - 1) / 2, cy = c.pos.r + (s0.h - 1) / 2;
+    const base = { c: Math.round(cx - (s1.w - 1) / 2), r: Math.round(cy - (s1.h - 1) / 2), rot };
+    // その場で回せなければ近くの空いている場所を探す
+    const cand = [];
+    for (let dr = -4; dr <= 4; dr++) for (let dc = -4; dc <= 4; dc++) cand.push([Math.abs(dc) + Math.abs(dr), dc, dr]);
+    cand.sort((a, b) => a[0] - b[0]);
+    for (const [, dc, dr] of cand) {
+      const p = { c: base.c + dc, r: base.r + dr, rot };
+      if (!check(ci, p)) { apply(ci, p, '回転'); return; }
+    }
+    toast('回転できる空きがありません。周りの部品を先に動かしてください', 'err');
+  }
+  function undo() { sync(); if (!E.undo.length) return false; E.redo.push(snapshot()); restore(E.undo.pop()); refresh(); return true; }
+  function redo() { sync(); if (!E.redo.length) return false; E.undo.push(snapshot()); restore(E.redo.pop()); refresh(); return true; }
+
+  /* ================= ポインタ操作 (base の操作ハンドラから呼ばれる) ================= */
+  H.boardDown = (wx, wy) => {
+    sync(); if (!B()) return false;
+    const [c, r] = hole(wx, wy), ci = compAt(c, r);
+    if (ci < 0) { if (E.sel >= 0) { E.sel = -1; bar(); A.rp(); } return false; }
+    E.sel = ci;
+    E.drag = { ci, c0: c, r0: r, pos0: Object.assign({}, B().prj.comps[ci].pos), ghost: null, err: null };
+    bar(); A.rp();
+    return true;
+  };
+  H.boardMove = (wx, wy, moved) => {
+    const d = E.drag; if (!d) return false;
+    if (!moved) return true;
+    const [c, r] = hole(wx, wy);
+    const g = { c: d.pos0.c + c - d.c0, r: d.pos0.r + r - d.r0, rot: d.pos0.rot };
+    if (!d.ghost || d.ghost.c !== g.c || d.ghost.r !== g.r) { d.ghost = g; d.err = check(d.ci, g); A.rp(); }
+    return true;
+  };
+  H.boardUp = () => {
+    const d = E.drag; if (!d) return; E.drag = null;
+    if (d.ghost && (d.ghost.c !== d.pos0.c || d.ghost.r !== d.pos0.r)) {
+      if (d.err) toast('そこには置けません: ' + d.err, 'err');
+      else apply(d.ci, d.ghost, '移動');
+    }
+    A.rp();
+  };
+  H.boardCancel = () => { E.drag = null; };
+
+  /* ================= 描画 (選択枠・移動中の影・ラッツネスト) ================= */
+  H.boardOverlay = pen => {
+    sync(); const st = B(); if (!st) return;
+    const b = st.board, mirror = S().boardView === 'bottom', X = c => mirror ? b.cols - 1 - c : c;
+    const TH = window.CADRender.TH;
+    const box = (comp, pos, o) => {
+      const s = shapeOf(comp, pos), x0 = Math.min(X(pos.c), X(pos.c + s.w - 1)) - .5, y0 = pos.r - .5;
+      pen.rect(x0 - .08, y0 - .08, s.w + .16, s.h + .16, o);
+    };
+    if (E.sel >= 0 && st.prj.comps[E.sel]) {
+      const comp = st.prj.comps[E.sel];
+      box(comp, comp.pos, { stroke: TH.accent || '#0A7A62', sw: .12, rx: .35 });
+      const d = E.drag;
+      if (d && d.ghost) {
+        const ok = !d.err, col = ok ? (TH.accent || '#0A7A62') : (TH.crit || '#B23A2E');
+        box(comp, d.ghost, { fill: col, alpha: .22, rx: .35 });
+        box(comp, d.ghost, { stroke: col, sw: .1, rx: .35 });
+        const s = shapeOf(comp, d.ghost);
+        // 動かした先から、同じネットのいちばん近いパッドへ点線
+        s.pads.forEach((p, pi) => {
+          const x = d.ghost.c + p.c, y = d.ghost.r + p.r;
+          pen.circle(X(x), y, .3, { fill: col, alpha: .9 });
+          const net = st.prj.nets.find(n => n.pads.some(q => q.ci === d.ci && q.pi === pi));
+          if (!net) return;
+          let bx = null, bd = Infinity;
+          net.pads.forEach(q => {
+            if (q.ci === d.ci) return;
+            const k = st.prj.comps[q.ci], sp = shapeOf(k).pads[q.pi], qx = k.pos.c + sp.c, qy = k.pos.r + sp.r, dd = Math.hypot(qx - x, qy - y);
+            if (dd < bd) { bd = dd; bx = [qx, qy]; }
+          });
+          if (bx) pen.line(X(x), y, X(bx[0]), bx[1], { stroke: col, w: .09, dash: [.25, .2], alpha: .9 });
+        });
+        if (d.err) pen.text(X(d.ghost.c), d.ghost.r - .8, d.err, { size: .5, fill: col, weight: 700, anchor: 'start', halo: TH.board, haloW: .14 });
+      }
+    }
+  };
+
+  /* ================= 操作バー ================= */
+  const bar0 = el('div', 'actbar'); bar0.id = 'boardEdit'; bar0.hidden = true;
+  $('stage').appendChild(bar0);
+  function bar() {
+    const st = S(), r = st.board;
+    const show = st.tab === 'pcb' && r && (E.sel >= 0 || E.undo.length || E.redo.length);
+    bar0.hidden = !show; if (!show) return;
+    bar0.innerHTML = '';
+    const comp = E.sel >= 0 ? r.prj.comps[E.sel] : null;
+    bar0.appendChild(el('b', null, comp ? comp.ref + (comp.val ? ' ' + comp.val : '') : '手動調整'));
+    const btn = (label, title, fn, dis) => { const x = el('button', 'btn', label); x.type = 'button'; x.title = title; x.disabled = !!dis; x.onclick = fn; bar0.appendChild(x); return x; };
+    if (comp) btn('↻ 回転', '90° 回転して配線を引き直す (R)', () => rotate(E.sel));
+    btn('元に戻す', '直前の移動・回転を取り消す (Ctrl+Z)', () => undo(), !E.undo.length);
+    btn('やり直し', '取り消した操作をやり直す (Ctrl+Y)', () => redo(), !E.redo.length);
+    if (comp) btn('×', '選択を解除 (Esc)', () => { E.sel = -1; bar(); A.rp(); });
+  }
+  const prevTab = H.onTab;
+  H.onTab = t => { if (prevTab) prevTab(t); sync(); bar(); };
+
+  /* ================= キーボード ================= */
+  const prevKey = H.keyCapture;
+  H.keyCapture = e => {
+    if (prevKey && prevKey(e)) return true;
+    const st = S(); if (st.tab !== 'pcb' || !st.board) return false;
+    sync();
+    const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
+    if (mod && k === 'z' && (e.shiftKey ? E.redo.length : E.undo.length)) { e.preventDefault(); e.shiftKey ? redo() : undo(); return true; }
+    if (mod && k === 'y' && E.redo.length) { e.preventDefault(); redo(); return true; }
+    if (!mod && k === 'r' && E.sel >= 0) { e.preventDefault(); rotate(E.sel); return true; }
+    if (k === 'escape' && E.sel >= 0) { E.sel = -1; bar(); A.rp(); return true; }
+    if ((k === 'delete' || k === 'backspace') && E.sel >= 0) { toast('部品の追加・削除は回路図で行ってください (ここでは移動・回転だけできます)', 'err'); return true; }
+    return false;
+  };
+
+  /* Android の戻るボタン: 部品の選択を先に外す */
+  const back0 = window.UBAndroidBack;
+  window.UBAndroidBack = () => { if (S().tab === 'pcb' && E.sel >= 0) { E.sel = -1; bar(); A.rp(); return true; } return back0 ? back0() : false; };
+
+  window.UBPerfEdit = { rotate, undo, redo, move: (ci, pos) => { sync(); const err = check(ci, pos); if (err) return err; apply(ci, pos, '移動'); return null; }, state: E, check };
 })();
 
 </script>

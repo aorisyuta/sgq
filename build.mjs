@@ -13,6 +13,6 @@ html = one(html, '</head>', tag('md-pre.js') + `<style>\n${css}\n</style>\n`);
 const renderMark = html.lastIndexOf('<script>', html.indexOf('UniBoard CAD — 描画 (Canvas / SVG 共通ペン)'));
 html = html.slice(0, renderMark) + tag('ui-pre.js') + tag('spice.js', true) + tag('spice-models.js', true) + tag('parts-symbols.js') + tag('parts-catalog.js') + tag('sim-netlist.js') + html.slice(renderMark);
 // 画面: アプリ本体の後ろ
-html = one(html, '</body>', tag('simui.js') + tag('pcbx.js') + tag('perf-manual.js') + tag('calc.js') + tag('shell.js') + tag('md.js'));
+html = one(html, '</body>', tag('simui.js') + tag('pcbx.js') + tag('perf-manual.js') + tag('calc.js') + tag('shell.js') + tag('perf-edit.js') + tag('md.js'));
 fs.writeFileSync(new URL('./index.html', import.meta.url), html);
 console.log('index.html', (html.length / 1024).toFixed(0) + ' KB');
