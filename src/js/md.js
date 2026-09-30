@@ -7,10 +7,6 @@
 (function () {
   'use strict';
   const D = document.documentElement;
-  window.UBSetUI = mode => {
-    try { localStorage.setItem('ubspice.ui', mode); } catch (e) { }
-    location.replace(location.pathname + location.hash);
-  };
   if (!D.classList.contains('md')) return;
 
   const UB = window.UniBoard, A = UB.api, S = () => UB.state;
@@ -70,8 +66,7 @@
       tab === 'sch' && [IC.parts, '部品リスト', () => $('bPal2').click(), $('bPal2').getAttribute('aria-pressed') === 'true' ? '表示中' : ''],
       tab === 'sch' && [IC.all, 'すべて選択', () => $('bAll').click()],
       tab !== 'pcbx' && [IC.info, '情報パネル', () => $('bInsp').click(), $('bInsp').getAttribute('aria-pressed') === 'true' ? '表示中' : ''],
-      [IC.theme, '表示テーマ', () => $('bTheme').click(), themeName()],
-      !D.classList.contains('android') && !/Android/i.test(navigator.userAgent || '') && [IC.style, 'PC 用の表示に切り替え', () => window.UBSetUI('classic')]
+      [IC.theme, '表示テーマ', () => $('bTheme').click(), themeName()]
     ].filter(x => x !== false);
   }
   function openMenu() {

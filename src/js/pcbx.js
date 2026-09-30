@@ -326,7 +326,9 @@
     const order = PX.nets.map((n, ni) => {
       const ps = n.pads.map(([ci, pi]) => padWorld(PX.comps[ci], PX.comps[ci].pads[pi]));
       let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; ps.forEach(p => { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); });
-      return { ni, len: (x1 - x0) + (y1 - y0) + (n.power ? 1000 : 0) };
+      // 美しい配線: GND → 電源 → 信号の順 (GND を最短で引く)。従来は電源を最後に
+      const rank = PX.beauty === false ? (n.power ? 1000 : 0) : (n.cls === 'gnd' ? -2000 : n.power ? -1000 : 0);
+      return { ni, len: (x1 - x0) + (y1 - y0) + rank };
     }).sort((a, b) => a.len - b.len).map(o => o.ni);
     if (PX.pour.B && !opts.noPourSkip) { const gi = PX.nets.findIndex(n => n.name === PX.pour.net); if (gi >= 0 && opts.skipPourNet) order.splice(order.indexOf(gi), 1); }
     void conn0;
@@ -347,9 +349,15 @@
         // 最大のグループを始点に、最も近いグループを目標に
         gl.sort((a, b) => b.length - a.length);
         const srcRoot = conn.find(conn.items.indexOf(gl[0][0]));
-        const srcItems = conn.items.filter((it, k) => conn.find(k) === srcRoot);
+        let srcItems = conn.items.filter((it, k) => conn.find(k) === srcRoot);
+        // 美しい配線: 線の途中から枝分かれさせず、まだ線が 1 本以下のパッド (一筆書きの端) から引く
+        const padDeg = it => PX.tracks.filter(t => t.net === ni && [[t.x1, t.y1], [t.x2, t.y2]].some(([x, y]) => Math.abs(x - it.pw.x) <= it.pw.w / 2 + 0.05 && Math.abs(y - it.pw.y) <= it.pw.h / 2 + 0.05)).length;
+        if (PX.beauty !== false) {
+          const ends = srcItems.filter(it => it.type === 'pad' && padDeg(it) < 2);
+          if (ends.length) srcItems = ends;
+        }
         let tgt = null, bd = 1e9;
-        gl.slice(1).forEach(gp => gp.forEach(p => gl[0].forEach(q => { const d = Math.hypot(p.pw.x - q.pw.x, p.pw.y - q.pw.y); if (d < bd) { bd = d; tgt = p; } })));
+        const srcPads = srcItems.filter(it => it.type === 'pad'); gl.slice(1).forEach(gp => gp.forEach(p => (srcPads.length ? srcPads : gl[0]).forEach(q => { const d = Math.hypot(p.pw.x - q.pw.x, p.pw.y - q.pw.y); if (d < bd) { bd = d; tgt = p; } })));
         const tgtRoot = conn.find(conn.items.indexOf(tgt));
         const tgtItems = conn.items.filter((it, k) => conn.find(k) === tgtRoot);
         // 始点・目標セル

@@ -348,3 +348,6 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
 .md-rail-logo .lg-bg{fill:var(--md-primary)}
 .md-rail-logo .lg-dot{fill:var(--md-on-primary);opacity:.45}
 .md-rail-logo .lg-wave{fill:none;stroke:var(--md-on-primary);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+/* 操作バーが出ている間は FAB をアイコンだけに縮める (M3 の拡張 FAB の折りたたみ) */
+html.md .stage:has(.actbar:not([hidden])) .md-fab{width:56px;padding:0}
+html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}

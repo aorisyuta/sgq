@@ -25,7 +25,9 @@ const audit = async (p, tag) => {
         const q = c.getBoundingClientRect(); vr = { left: Math.max(vr.left, q.left), top: Math.max(vr.top, q.top), right: Math.min(vr.right, q.right), bottom: Math.min(vr.bottom, q.bottom) };
       }
       if (vr.right - vr.left < 6 || vr.bottom - vr.top < 6) return;
-      const pts = [[(vr.left + vr.right) / 2, (vr.top + vr.bottom) / 2], [vr.left + 3, vr.top + 3], [vr.right - 3, vr.bottom - 3]];
+      // 角丸 (M3 のボタンは丸い) の角は当たり判定の外なので、中心線上の 3 点で調べる
+      const cy = (vr.top + vr.bottom) / 2, wd = vr.right - vr.left;
+      const pts = [[(vr.left + vr.right) / 2, cy], [vr.left + Math.max(3, wd * .28), cy], [vr.right - Math.max(3, wd * .28), cy]];
       const bad = pts.filter(([x, y]) => { if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false; const t = document.elementFromPoint(x, y); return t && t !== e && !e.contains(t) && !(t.closest && t.closest('label') && t.closest('label').contains(e)); });
       if (bad.length >= 2 || (bad.length === 1 && bad[0] === pts[0])) {
         const t = document.elementFromPoint(...(bad[0]));

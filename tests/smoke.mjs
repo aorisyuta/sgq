@@ -20,7 +20,7 @@ await p.evaluate(() => { window.UBSim.state.cfg.type = 'op'; });
 await p.evaluate(() => window.UBSim.run()); await p.waitForTimeout(1200);
 await p.screenshot({ path: OUT + '/03-op.png' });
 // PCB
-await p.click('#tabPcbx'); await p.waitForTimeout(800);
+await p.click('.md-nav-it[data-for="tabPcbx"]'); await p.waitForTimeout(800);
 await p.screenshot({ path: OUT + '/04-pcb.png' });
 const un = await p.evaluate(() => window.UBPcb.autoRoute()); await p.waitForTimeout(500);
 console.log('unrouted', un);
@@ -31,7 +31,7 @@ const files = await p.evaluate(() => window.UBPcb.gerberFiles().map(f => f[0] + 
 console.log(files.join('\n'));
 await p.evaluate(() => { window.UBPcb.state.mode = 'real'; window.UBPcb.render(); });
 await p.screenshot({ path: OUT + '/06-pcb-real.png' });
-await p.click('#tabSch'); await p.waitForTimeout(300);
+await p.click('.md-nav-it[data-for="tabSch"]'); await p.waitForTimeout(300);
 // 計算ツール
 await p.click('#bCalc'); await p.waitForTimeout(300);
 await p.screenshot({ path: OUT + '/07-calc.png' });

@@ -393,18 +393,17 @@ textarea.code{width:100%;height:320px;font-family:var(--mono);font-size:11px;bor
 /* ---- md-pre.js ---- */
 /* =====================================================================
    UniBoard SPICE — 表示スタイルの判定 (描画より前に実行)
-   Android (アプリ / Android のブラウザ) では常に Material Design 3 の見た目 (html.md)。
-   PC などでは ?ui=md / ?ui=classic または保存した設定で切り替えられる
+   Web 版も Android アプリと同じ Material Design 3 の見た目 (html.md) にする。
+   旧デザインは URL に ?ui=classic を付けたときだけ (Android では使えない)
    ===================================================================== */
 (function () {
-  var d = document.documentElement, pref = null;
-  try { pref = localStorage.getItem('ubspice.ui'); } catch (e) { }
-  var q = /[?&]ui=(md|classic)\b/.exec(location.search);
-  if (q) { pref = q[1]; try { localStorage.setItem('ubspice.ui', pref); } catch (e) { } }
+  var d = document.documentElement;
   var app = !!window.AndroidBridge;
   if (app) d.classList.add('android');
   var android = app || /Android/i.test(navigator.userAgent || '');
-  if (android || pref === 'md') d.classList.add('md');
+  var classic = !android && /[?&]ui=classic\b/.test(location.search);
+  try { localStorage.removeItem('ubspice.ui'); } catch (e) { }
+  if (!classic) d.classList.add('md');
 })();
 
 </script>
@@ -737,6 +736,8 @@ html,body{overflow:hidden;overscroll-behavior:none;max-width:100%}
   .bar .btn.icon,.bar > .btn{padding:5px 7px}
   .px-bar .btn{padding:5px 7px;font-size:11.5px}
 }
+.kv.bm-ok span:last-child{color:var(--ok);font-weight:600}
+.kv.bm-warn span:last-child{color:var(--warn);font-weight:600}
 
 /* =====================================================================
    UniBoard SPICE — Android (Material Design 3) の見た目
@@ -1088,6 +1089,9 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
 .md-rail-logo .lg-bg{fill:var(--md-primary)}
 .md-rail-logo .lg-dot{fill:var(--md-on-primary);opacity:.45}
 .md-rail-logo .lg-wave{fill:none;stroke:var(--md-on-primary);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+/* 操作バーが出ている間は FAB をアイコンだけに縮める (M3 の拡張 FAB の折りたたみ) */
+html.md .stage:has(.actbar:not([hidden])) .md-fab{width:56px;padding:0}
+html.md .stage:has(.actbar:not([hidden])) .md-fab span{display:none}
 
 </style>
 </head>
@@ -1950,6 +1954,12 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
   /* ---------------- 自動配置 (焼きなまし) ---------------- */
   function makePlacer(prj, board, opts) {
     opts = Object.assign({ overlapW: 260, jumpW: 26, seed: 12345, strip: board.type === 'strip' }, opts);
+    // 美しい配線: GND・電源は短く一筆書きに、同じ機能ブロックの部品は一か所にまとめる
+    const beauty = opts.beauty !== false;
+    const gndW = opts.gndW || 5, railW = opts.railW || 1.5, branchW = opts.branchW || 1.2;
+    const groupW = opts.groupW == null ? 0.4 : opts.groupW, intrudeW = opts.intrudeW == null ? 5 : opts.intrudeW, overlapGW = opts.overlapGW == null ? 0.5 : opts.overlapGW;
+    if (beauty && !prj.groups) functionalGroups(prj);
+    const GRP = beauty && prj.groups && prj.nGroups ? prj.groups : null;
     const N = prj.comps.length, cols = board.cols, rows = board.rows, NC = cols * rows;
     const occ = new Int16Array(NC);
     if (board.keepout) for (const k of board.keepout) if (k >= 0 && k < NC) occ[k] = 1;
@@ -2021,11 +2031,51 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
         if (opts.strip) rs.add(board.stripDir === 'col' ? c : r);
       }
       let v = (c1 - c0) + (r1 - r0);
+      if (beauty && !opts.strip) {
+        // 最小全域木の長さ + 枝分かれ (3 本以上集まる点) の罰則。GND・電源は重く
+        const P = n.pads.map(padAbs), k = P.length;
+        if (k === 2) v = octile(P[0][0] - P[1][0], P[0][1] - P[1][1]);
+        else {
+          const inT = new Uint8Array(k), dist = new Float64Array(k).fill(Infinity), par = new Int32Array(k).fill(-1), deg = new Int32Array(k);
+          dist[0] = 0; v = 0;
+          for (let it = 0; it < k; it++) {
+            let u = -1; for (let q = 0; q < k; q++) if (!inT[q] && (u < 0 || dist[q] < dist[u])) u = q;
+            inT[u] = 1; v += dist[u]; if (par[u] >= 0) { deg[u]++; deg[par[u]]++; }
+            for (let q = 0; q < k; q++) if (!inT[q]) { const dd = octile(P[u][0] - P[q][0], P[u][1] - P[q][1]); if (dd < dist[q]) { dist[q] = dd; par[q] = u; } }
+          }
+          for (let q = 0; q < k; q++) if (deg[q] > 2) v += branchW * (deg[q] - 2);
+        }
+        return v * (n.cls === 'gnd' ? gndW : n.rail ? railW : 1);
+      }
       if (n.pads.length > 3) v *= 1 + (n.pads.length - 3) * 0.06;
       if (opts.strip) v = (c1 - c0) * 0.5 + (r1 - r0) * 0.4 + (rs.size - 1) * opts.jumpW;
       return v;
     }
 
+    // 機能ブロック: まとまりの大きさ (中心の外接矩形の周長) + 他ブロックの部品が入り込んだ数
+    const nG = GRP ? prj.nGroups : 0;
+    const gx0 = new Float64Array(nG), gx1 = new Float64Array(nG), gy0 = new Float64Array(nG), gy1 = new Float64Array(nG);
+    function groupCost() {
+      if (!GRP) return 0;
+      gx0.fill(1e9); gy0.fill(1e9); gx1.fill(-1e9); gy1.fill(-1e9);
+      const cx = new Float64Array(N), cy = new Float64Array(N);
+      for (let i = 0; i < N; i++) {
+        const s = shape(i); cx[i] = pos[i].c + (s.w - 1) / 2; cy[i] = pos[i].r + (s.h - 1) / 2;
+        const g = GRP[i]; if (g < 0) continue;
+        if (pos[i].c < gx0[g]) gx0[g] = pos[i].c; if (pos[i].c + s.w - 1 > gx1[g]) gx1[g] = pos[i].c + s.w - 1;
+        if (pos[i].r < gy0[g]) gy0[g] = pos[i].r; if (pos[i].r + s.h - 1 > gy1[g]) gy1[g] = pos[i].r + s.h - 1;
+      }
+      let v = 0;
+      for (let g = 0; g < nG; g++) v += groupW * ((gx1[g] - gx0[g]) + (gy1[g] - gy0[g]));
+      for (let i = 0; i < N; i++) for (let g = 0; g < nG; g++)
+        if (g !== GRP[i] && cx[i] > gx0[g] && cx[i] < gx1[g] && cy[i] > gy0[g] && cy[i] < gy1[g]) v += intrudeW;
+      // ブロックどうしの領域が重ならないように (重なった面積に比例)
+      for (let a = 0; a < nG; a++) for (let b = a + 1; b < nG; b++) {
+        const ox = Math.min(gx1[a], gx1[b]) - Math.max(gx0[a], gx0[b]) + 1, oy = Math.min(gy1[a], gy1[b]) - Math.max(gy0[a], gy0[b]) + 1;
+        if (ox > 0 && oy > 0) v += overlapGW * ox * oy;
+      }
+      return v;
+    }
     // 初期配置: 面積降順のシェルフパッキング
     const order = prj.comps.map((c, i) => i).sort((a, b) =>
       prj.comps[b].rots[0].w * prj.comps[b].rots[0].h - prj.comps[a].rots[0].w * prj.comps[a].rots[0].h);
@@ -2041,7 +2091,8 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
 
     let edgeSum = 0;
     for (let i = 0; i < N; i++) edgeSum += edgeCost(i);
-    let cost = wire + edgeSum + overlap * opts.overlapW + crowd * crowdW;
+    let grpSum = groupCost();
+    let cost = wire + edgeSum + grpSum + overlap * opts.overlapW + crowd * crowdW;
     const iters = Math.max(20000, Math.min(500000, 5200 * N));
     let done = 0;
     let T0 = Math.max(6, cost / Math.max(4, N) * 0.55), T = T0;
@@ -2083,11 +2134,12 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
       const upd = [];
       touched.forEach(x => { const v = calcNet(x); upd.push([x, v]); dW += v - netCost[x]; });
       const dE = edgeCost(i) - eOldI + (j >= 0 ? edgeCost(j) - eOldJ : 0);
-      const nCost = wire + dW + edgeSum + dE + overlap * opts.overlapW + crowd * crowdW;
+      const nGrp = GRP ? groupCost() : 0;
+      const nCost = wire + dW + edgeSum + dE + nGrp + overlap * opts.overlapW + crowd * crowdW;
       const d = nCost - cost;
       if (d <= 0 || rnd() < detExp(-d / Math.max(1e-6, T))) {
         upd.forEach(([x, v]) => netCost[x] = v);
-        wire += dW; edgeSum += dE; cost = nCost;
+        wire += dW; edgeSum += dE; grpSum = nGrp; cost = nCost;
         return true;
       }
       // rollback
@@ -2279,7 +2331,7 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
         const dcode = d + 1;
         // 部品面ジャンパの曲がり角は穴に通して固定する → 半田面が他ネットの穴では曲げられない
         if (l === 1 && d0 !== 0 && d0 !== dcode) { const b = grid.node[0][idx]; if (b !== -1 && b !== net) continue; }
-        let cst = isDiag ? 14 : 10;
+        let cst = isDiag ? 14 + (opt.diagExtra || 0) : 10;
         if (l === 1) { cst += topX; if (grid.body[nidx]) cst += bodyX; }
         if (d0 !== 0 && d0 !== dcode) cst += bend;
         const ns = ((l * NC + nidx) * 9) + dcode, ng = g0 + cst;
@@ -2416,6 +2468,26 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
       }
     };
 
+    // 美しい配線: 多ピンのネットは一筆書きの順にパッドからパッドへ結ぶ (途中から枝分かれさせない)
+    if (opt.chain && remaining.length >= 2) {
+      const ord = chainOrder([...new Set(pads)], cols);
+      // 最初のパッドを一筆書きの端にそろえる
+      connected.clear(); connHoles.clear(); connected.add(ord[0]); connHoles.add(ord[0]);
+      for (let i = 1; i < ord.length; i++) {
+        const target = ord[i];
+        if (connHoles.has(target)) continue;
+        let s = astar(grid, new Set([ord[i - 1]]), target, net.index, opt);
+        if (s === null) s = astar(grid, connected, target, net.index, opt);   // 通れなければ既存の線から
+        if (s === null) {
+          if (!allowForced) return null;
+          const jp = insulatedJumper(grid, ord[i - 1], target, net.index);
+          rec.jumpers.push({ pts: jp, forced: true });
+          for (let q = 1; q < jp.length; q++) rec.len += hyp(jp[q][0] - jp[q - 1][0], jp[q][1] - jp[q - 1][1]);
+          connected.add(target); connHoles.add(target);
+        } else commit(reconstruct(grid, s));
+      }
+      return rec;
+    }
     let guard = 0;
     while (remaining.length) {
       if (++guard > 400) break;
@@ -2491,7 +2563,7 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
     const routes = new Map();
     let queue = nets.slice().sort((a, b) => {
       const A = netBBox(grid, a), B = netBBox(grid, b);
-      if (opt.railsFirst && a.rail !== b.rail) return a.rail ? -1 : 1;
+      if (opt.railsFirst) { const ra = a.cls === 'gnd' ? 0 : a.rail ? 1 : 2, rb = b.cls === 'gnd' ? 0 : b.rail ? 1 : 2; if (ra !== rb) return ra - rb; }
       return ((A.c1 - A.c0) + (A.r1 - A.r0)) - ((B.c1 - B.c0) + (B.r1 - B.r0));
     });
     const stats = { passes: 0, ripups: 0, forced: 0 };
@@ -2838,9 +2910,134 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
     return out;
   }
 
+  /* ---------------- 美しい配線: 機能ブロック / 一筆書きの順番 / 評価 ---------------- */
+  const octile = (dx, dy) => { dx = Math.abs(dx); dy = Math.abs(dy); return Math.max(dx, dy) + 0.4142 * Math.min(dx, dy); };
+  // 同じ働きをする部品のまとまり: 能動部品 (IC・トランジスタ等) を核に、信号線でつながる受動部品を集める
+  function functionalGroups(prj) {
+    const N = prj.comps.length, grp = new Int32Array(N).fill(-1);
+    const W = Array.from({ length: N }, () => new Map());
+    for (const n of prj.nets) {
+      if (n.rail) continue;
+      const cs = [...new Set(n.pads.map(p => p.ci))];
+      if (cs.length < 2 || cs.length > 8) continue;
+      const w = 1 / (cs.length - 1);
+      for (const a of cs) for (const b of cs) if (a !== b) W[a].set(b, (W[a].get(b) || 0) + w);
+    }
+    const free = i => !prj.comps[i].edge && !prj.comps[i].isPower;
+    const anchor = i => free(i) && (/^(U|IC|Q|TR|RY|K)\d/i.test(prj.comps[i].ref || '') || prj.comps[i].nPads >= 5);
+    let G = 0;
+    const anchors = [];
+    for (let i = 0; i < N; i++) if (anchor(i)) { grp[i] = G++; anchors.push(i); }
+    // 結び付きの強い順に 1 つずつ所属を決める
+    for (;;) {
+      let bi = -1, bg = -1, bs = 0;
+      for (let i = 0; i < N; i++) {
+        if (grp[i] >= 0 || !free(i)) continue;
+        const sc = new Map();
+        W[i].forEach((w, j) => { if (grp[j] >= 0) sc.set(grp[j], (sc.get(grp[j]) || 0) + w); });
+        sc.forEach((v, g) => { if (v > bs + 1e-9) { bs = v; bi = i; bg = g; } });
+      }
+      if (bi < 0) break;
+      grp[bi] = bg;
+    }
+    // 能動部品につながらない部品どうしのまとまり
+    for (let i = 0; i < N; i++) {
+      if (grp[i] >= 0 || !free(i) || !W[i].size) continue;
+      const st = [i]; grp[i] = G;
+      while (st.length) { const a = st.pop(); W[a].forEach((w, b) => { if (grp[b] < 0 && free(b)) { grp[b] = G; st.push(b); } }); }
+      G++;
+    }
+    // 電源にしかつながらない部品 (パスコン等) は、同じ電源を使う能動部品のブロックへ
+    for (let i = 0; i < N; i++) {
+      if (grp[i] >= 0 || !free(i)) continue;
+      const mine = new Set(prj.comps[i].nets);
+      let best = -1, bv = 0;
+      for (const a of anchors) {
+        let v = 0; prj.comps[a].nets.forEach(x => { if (mine.has(x) && !prj.nets[x].rail) v += 2; else if (mine.has(x)) v += 1; });
+        if (v > bv) { bv = v; best = a; }
+      }
+      if (best >= 0 && bv >= 2) grp[i] = grp[best];
+    }
+    // 1 部品だけのブロックは無し扱い
+    const cnt = new Map(); grp.forEach(g => { if (g >= 0) cnt.set(g, (cnt.get(g) || 0) + 1); });
+    const remap = new Map(); let k = 0;
+    for (let i = 0; i < N; i++) { const g = grp[i]; if (g < 0 || cnt.get(g) < 2) { grp[i] = -1; continue; } if (!remap.has(g)) remap.set(g, k++); grp[i] = remap.get(g); }
+    prj.groups = grp; prj.nGroups = k;
+    prj.comps.forEach((c, i) => c.group = grp[i]);
+    return grp;
+  }
+  // 多ピンのネットを一筆書き (枝分かれなし) で結ぶ順番: 最近傍法 + 2-opt
+  function chainOrder(cells, cols) {
+    const P = cells.map(i => [i % cols, (i / cols) | 0]), n = P.length;
+    const d = (a, b) => octile(P[a][0] - P[b][0], P[a][1] - P[b][1]);
+    if (n <= 2) return cells.slice();
+    let best = null, bl = Infinity;
+    for (let s = 0; s < n; s++) {
+      const used = new Uint8Array(n), ord = [s]; used[s] = 1; let L = 0;
+      for (let k = 1; k < n; k++) {
+        const a = ord[ord.length - 1]; let bj = -1, bd = Infinity;
+        for (let j = 0; j < n; j++) if (!used[j]) { const v = d(a, j); if (v < bd) { bd = v; bj = j; } }
+        used[bj] = 1; ord.push(bj); L += bd;
+      }
+      if (L < bl) { bl = L; best = ord; }
+    }
+    for (let it = 0, imp = true; imp && it < 60; it++) {
+      imp = false;
+      for (let i = 0; i < n - 2; i++) for (let j = i + 2; j < n; j++) {
+        const a = best[i], b = best[i + 1], c = best[j], e = j + 1 < n ? best[j + 1] : -1;
+        const before = d(a, b) + (e >= 0 ? d(c, e) : 0), after = d(a, c) + (e >= 0 ? d(b, e) : 0);
+        if (after + 1e-9 < before) { best = best.slice(0, i + 1).concat(best.slice(i + 1, j + 1).reverse(), best.slice(j + 1)); imp = true; }
+      }
+    }
+    return best.map(k => cells[k]);
+  }
+  // 出来上がりの「美しさ」: GND の長さ・枝分かれの数・機能ブロックの混ざり具合
+  function beautyMetrics(prj, board, result) {
+    const cols = board.cols;
+    let gndLen = 0, totalLen = 0, branches = 0, bends = 0, diags = 0;
+    if (result && result.routes) result.routes.forEach((rec, ni) => {
+      const net = prj.nets.find(n => n.index === ni) || prj.nets[ni];
+      totalLen += rec.len || 0;
+      if (net && net.cls === 'gnd') gndLen += rec.len || 0;
+      const deg = new Map(), add = k => deg.set(k, (deg.get(k) || 0) + 1);
+      const seen = new Set();
+      let prev = null;
+      rec.segs.forEach(sg => {
+        if (sg.c1 !== sg.c2 && sg.r1 !== sg.r2) diags++;
+        if (prev && prev.l === sg.l && prev.c2 === sg.c1 && prev.r2 === sg.r1 && (Math.sign(prev.c2 - prev.c1) !== Math.sign(sg.c2 - sg.c1) || Math.sign(prev.r2 - prev.r1) !== Math.sign(sg.r2 - sg.r1))) bends++;
+        prev = sg;
+        const a = sg.r1 * cols + sg.c1, b = sg.r2 * cols + sg.c2, key = Math.min(a, b) + ':' + Math.max(a, b);
+        if (seen.has(key)) return; seen.add(key); add(a); add(b);
+      });
+      (rec.jumpers || []).forEach(j => { const p = j.pts; if (p.length > 1) { add(p[0][1] * cols + p[0][0]); add(p[p.length - 1][1] * cols + p[p.length - 1][0]); } });
+      // 一直線の途中の点 (同じ向きで通り抜けるだけ) は数えない。3 本以上集まる点が枝分かれ
+      deg.forEach(v => { if (v >= 3) branches += v - 2; });
+    });
+    const blocks = [];
+    if (prj.groups) {
+      for (let g = 0; g < (prj.nGroups || 0); g++) {
+        let c0 = 1e9, r0 = 1e9, c1 = -1e9, r1 = -1e9; const refs = [];
+        prj.comps.forEach(c => {
+          if (c.group !== g) return;
+          const s = c.rots[((c.pos.rot / 90) | 0) & 3];
+          c0 = Math.min(c0, c.pos.c); r0 = Math.min(r0, c.pos.r); c1 = Math.max(c1, c.pos.c + s.w - 1); r1 = Math.max(r1, c.pos.r + s.h - 1);
+          refs.push(c.ref);
+        });
+        if (refs.length) blocks.push({ g, c0, r0, c1, r1, refs });
+      }
+    }
+    let mix = 0;
+    prj.comps.forEach(c => {
+      const s = c.rots[((c.pos.rot / 90) | 0) & 3], cx = c.pos.c + (s.w - 1) / 2, cy = c.pos.r + (s.h - 1) / 2;
+      blocks.forEach(b => { if (b.g !== c.group && cx > b.c0 && cx < b.c1 && cy > b.r0 && cy < b.r1) mix++; });
+    });
+    return { gndLen, totalLen, branches, bends, diags, mix, blocks };
+  }
+
   global.CADBoard = {
     rotFp, buildProject, netClass, autoBoardSize, compactBoard, cornerKeepout, makePlacer, makeGrid, routeAll,
-    stripConvert, verify, wiringList, colName, holeName, stampObstacles, stampPads
+    stripConvert, verify, wiringList, colName, holeName, stampObstacles, stampPads,
+    functionalGroups, chainOrder, beautyMetrics, octile
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 
@@ -6181,6 +6378,16 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
     pen.rect(-1.25, -1.25, cols + 1.5, rows + 1.5, { fill: TH.board, stroke: TH['board-edge'], sw: .12, rx: .6 });
     for (const [dx, dy] of [[-.75, -.75], [cols - .25, -.75], [-.75, rows - .25], [cols - .25, rows - .25]])
       pen.circle(dx, dy, .28, { fill: TH['board-edge'], alpha: .55 });
+    // 機能ブロック (同じ働きの部品のまとまり) の枠
+    if (o.blocks && o.blocks.length) {
+      const BC = ['#2E7D6B', '#5B6CC4', '#B5651D', '#8E4FA8', '#2F80A8', '#9A7A12', '#C0476A', '#4F7A2A'];
+      o.blocks.forEach((b, i) => {
+        const col = BC[i % BC.length], x0 = Math.min(X(b.c0), X(b.c1)) - .62, y0 = b.r0 - .62, w = Math.abs(X(b.c1) - X(b.c0)) + 1.24, h = b.r1 - b.r0 + 1.24;
+        pen.rect(x0, y0, w, h, { fill: col, alpha: .09, rx: .5 });
+        pen.rect(x0, y0, w, h, { stroke: col, sw: .07, alpha: .7, rx: .5 });
+        pen.text(x0 + .18, y0 + .5, '#' + (i + 1) + ' ' + b.refs[0], { size: .42, fill: col, weight: 700, anchor: 'start', mono: true, halo: TH.board, haloW: .12 });
+      });
+    }
 
     if (board.type === 'strip' && strip) {
       const dir = strip.dir || 'row';
@@ -6464,7 +6671,7 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
     nets: [], netOfWire: new Map(), hiNet: null,
     board: null,          // 変換結果 {prj,board,result,strip,problems}
     boardView: 'top',
-    cfg: { type: 'perf', auto: true, cols: 25, rows: 18, stripDir: 'row', policy: 'auto', quality: 1, forced: true, seed: 20260918, corner: 0, spacing: 1 },
+    cfg: { type: 'perf', auto: true, cols: 25, rows: 18, stripDir: 'row', policy: 'auto', quality: 1, forced: true, seed: 20260918, corner: 0, spacing: 1, beauty: true, blocks: true },
     cfgLoaded: false,
     cursor: [0, 0], hoverHole: null, openPins: new Set(), multi: false,
     palOpen: window.innerWidth > 640, inspOpen: window.innerWidth > 1100,
@@ -6511,7 +6718,8 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
     } else if (S.board) {
       RD.drawBoard(pen, S.board, {
         view: S.boardView === 'bottom' ? 'bottom' : S.boardView === 'both' ? 'both' : 'top',
-        mirror: S.boardView === 'bottom', highlightNet: S.hiNet, cursor: S.hoverHole, mono: S.pcbMono
+        mirror: S.boardView === 'bottom', highlightNet: S.hiNet, cursor: S.hoverHole, mono: S.pcbMono,
+        blocks: S.cfg.blocks !== false && !S.pcbMono && S.board.beauty && S.board.beauty.blocks.length >= 2 ? S.board.beauty.blocks : null
       });
     }
     ctx.restore();
@@ -7397,6 +7605,22 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
           p.appendChild(kv('表裏渡し（穴通し）', String(m.vias)));
           p.appendChild(kv('被覆ジャンパ', String(m.forced)));
         }
+        const bm = S.board.beauty;
+        if (bm && b.type !== 'strip') {
+          p.appendChild(el('h5', 'sec', '美しい配線のチェック'));
+          const gOk = bm.gndLen <= Math.max(6, bm.totalLen * 0.35), brOk = bm.branches === 0, mixOk = bm.mix === 0;
+          const row = (k, v, good) => { const d = kv(k, (good ? '✓ ' : '△ ') + v); d.classList.add(good ? 'bm-ok' : 'bm-warn'); return d; };
+          p.appendChild(row('GND 配線長', (bm.gndLen * 2.54).toFixed(1) + ' mm', gOk));
+          p.appendChild(row('枝分かれ', bm.branches + ' か所', brOk));
+          p.appendChild(row('機能ブロックの混在', bm.mix ? bm.mix + ' 部品' : 'なし', mixOk));
+          p.appendChild(kv('配線の曲がり', bm.bends + ' か所'));
+          p.appendChild(kv('機能ブロック', bm.blocks.length ? bm.blocks.map((x, i) => '#' + (i + 1) + ' ' + x.refs.join(' ')).join(' / ') : '—'));
+          if (bm.blocks.length >= 2) {
+            const lb = el('label', 'dk-check'); const ck = el('input'); ck.type = 'checkbox'; ck.checked = S.cfg.blocks !== false;
+            ck.onchange = () => { S.cfg.blocks = ck.checked; store.set('cfg', S.cfg); rp(); };
+            lb.appendChild(ck); lb.appendChild(el('span', null, '機能ブロックを枠で表示')); p.appendChild(lb);
+          }
+        }
         p.appendChild(el('h5', 'sec', '凡例'));
         const lg = el('div', 'legend');
         const ln = (casing, core, dash) => `<svg class="lsw" viewBox="0 0 26 8"><line x1="4" y1="4" x2="22" y2="4" stroke="${casing}" stroke-width="${core ? 5.4 : 3.4}" stroke-linecap="round"/>${core ? `<line x1="4" y1="4" x2="22" y2="4" stroke="${core}" stroke-width="2" stroke-linecap="${dash ? 'butt' : 'round'}"${dash ? ' stroke-dasharray="3.5 2.5"' : ''}/>` : ''}</svg>`;
@@ -7548,7 +7772,9 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
     $('progFill').style.width = '0%';
 
     const noForced = S.cfg.type !== 'strip' && S.cfg.forced === false;
-    const maxTry = noForced ? [5, 8, 12][S.cfg.quality] || 8 : 1;
+    const beauty = S.cfg.beauty !== false;
+    // 美しい配線: 配置の乱数を変えて何通りか作り、いちばん美しいものを採用する
+    const maxTry = Math.max(noForced ? [5, 8, 12][S.cfg.quality] || 8 : 1, beauty ? [3, 6, 10][S.cfg.quality] || 6 : 1);
     const chunk = [14000, 26000, 40000][S.cfg.quality] || 26000;
     let bestRun = null, k = 0;
 
@@ -7567,9 +7793,10 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
       const margin = 2 + (S.cfg.auto ? Math.floor(k / 2) : 0);
       const prj = CB.buildProject(doc, prjNets);
       const board = makeBoard(prj);
-      const placer = CB.makePlacer(prj, board, { seed, strip: S.cfg.type === 'strip', crowdW: S.cfg.type === 'strip' ? 0 : SPACING_W[S.cfg.spacing == null ? 1 : S.cfg.spacing] });
+      const placer = CB.makePlacer(prj, board, { seed, beauty, strip: S.cfg.type === 'strip', crowdW: S.cfg.type === 'strip' ? 0 : SPACING_W[S.cfg.spacing == null ? 1 : S.cfg.spacing] });
       $('progTitle').textContent = '自動配置を計算中';
       $('progText').textContent = k === 0 ? '焼きなまし法で部品位置を最適化しています'
+        : beauty ? `GND が短く、機能ごとにまとまり、枝分かれの少ない配置を探しています（${k + 1} / ${maxTry} 通り目）`
         : `被覆ジャンパを使わずに配線できる配置を探しています（${k + 1} / ${maxTry} 回目）`;
       function stepPlace() {
         const t0 = performance.now();
@@ -7594,18 +7821,21 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
           topExtra: S.cfg.policy === 'jumper' ? -2 : S.cfg.policy === 'solder' ? 15 : 5,
           viaCost: S.cfg.policy === 'jumper' ? 30 : 55,
           maxPass: 5 + S.cfg.quality * 3 + (noForced ? 3 : 0), seed, noForced,
-          reduceTop: [300, 1000, 3000][S.cfg.quality] || 1000
+          reduceTop: [300, 1000, 3000][S.cfg.quality] || 1000,
+          chain: beauty, railsFirst: beauty, diagExtra: beauty ? 6 : 0
         };
         result = CB.routeAll(prj, board, ropt);
         problems = CB.verify(prj, board, result, null);
       }
       const run = { prj, board, result, strip, problems, nets: prjNets, seed };
       run.topRuns = topRunsOf(result);
-      const score = r => (r.result.metrics.unrouted || 0) * 1e6 + r.board.cols * r.board.rows * 10 + (r.topRuns || 0) * 400 + r.result.metrics.totalLen;
+      run.beauty = CB.beautyMetrics(prj, board, result);
+      const score = r => (r.result.metrics.unrouted || 0) * 1e6 + r.board.cols * r.board.rows * 10 + (r.topRuns || 0) * 400 + r.result.metrics.totalLen
+        + (beauty ? (r.result.metrics.forced || 0) * 3000 + r.beauty.branches * 250 + r.beauty.gndLen * 10 + r.beauty.mix * 600 + r.beauty.bends * 15 + r.result.metrics.totalLen * 1.5 : 0);
       if (!bestRun || score(run) < score(bestRun)) bestRun = run;
       k++;
       // 被覆ジャンパなし: 配線しきれない間は配置を変えて探し続ける (配線できたらその配置番号で確定 = 同じ番号なら同じ結果)
-      if (noForced && k < maxTry && (result.metrics.unrouted || 0) > 0) { attempt(); return; }
+      if (k < maxTry && (beauty || (noForced && (result.metrics.unrouted || 0) > 0))) { attempt(); return; }
       finish(bestRun);
     }
     function topRunsOf(res) {
@@ -7615,7 +7845,7 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
     }
     function finish(r) {
       const un = r.result.metrics.unrouted || 0;
-      if (noForced) S.cfg.seed = r.seed;   // 再試行はこの配置から続けて探す
+      if (noForced || beauty) S.cfg.seed = r.seed;   // 再試行はこの配置から続けて探す
       r.note = noForced && un > 0
         ? `被覆ジャンパなしでは ${un} ネットを配線しきれませんでした（${maxTry} 通りの配置を試行）。基板サイズを大きくする・「入念」にする・「再試行」を押す、のいずれかをお試しください。`
         : (noForced ? `被覆ジャンパなしで配線できました（${k} 通り試行、部品面ジャンパ ${r.topRuns || 0} 本、配置番号 ${r.seed}）。` : null);
@@ -7637,13 +7867,14 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
     policy: [['auto', '自動（推奨）', 'バランスよく配線'], ['solder', 'すず線を優先', '半田面の配線を多めに'], ['jumper', 'ジャンパを優先', '部品面の渡り線を多めに']],
     auto: [['1', '自動', '部品量から算出'], ['0', '手動', '列×行を指定']],
     forced: [['1', '使ってよい', '配線しきれない所は絶縁線でつなぐ'], ['0', '使わない', '配置を変えて探し直す']],
+    beauty: [['1', '厳守（推奨）', 'GND 最短・機能ごとにまとめる・枝分かれ最小'], ['0', 'しない', '配線長だけで配置する']],
     quality: [['0', '速い', '数秒で完了'], ['1', '標準', 'おすすめ'], ['2', '入念', '時間をかけて最適化']],
     spacing: [['0', '詰める', '小さくまとめる'], ['1', '標準', 'おすすめ'], ['2', '広め', '配線の通り道を多く']],
     corner: [['0', 'なし', '四隅も使う'], ['2', '2×2 穴', '四隅を空ける'], ['3', '3×3 穴', 'M3 ねじ穴用に広め']]
   };
   const optLabel = (k, v) => (CFG_OPTS[k].find(o => o[0] === String(v)) || [, ''])[1];
   function cfgSummary() {
-    const c = S.cfg, out = [['基板タイプ', optLabel('type', c.type)]];
+    const c = S.cfg, out = [['基板タイプ', optLabel('type', c.type)], ['美しい配線', c.beauty === false ? 'しない' : '厳守']];
     if (c.type === 'strip') out.push(['銅箔の向き', optLabel('stripDir', c.stripDir)]);
     else { out.push(['配線の方針', optLabel('policy', c.policy)]); out.push(['被覆ジャンパ', c.forced === false ? '使わない' : '使ってよい']); }
     out.push(['基板サイズ', c.auto ? '自動' : `${c.cols} × ${c.rows} 穴`]);
@@ -7673,6 +7904,8 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
           g.appendChild(seg); body.appendChild(g); return g;
         };
         group('基板タイプ', 'type', () => d.type, v => d.type = v);
+        const bg = group('美しい配線', 'beauty', () => d.beauty === false ? '0' : '1', v => d.beauty = v === '1');
+        if (d.beauty !== false) bg.appendChild(el('p', 'cfghint', '① GND・電源の配線をいちばん短く ② 同じ働きの部品 (IC・トランジスタとその周りの部品) を一か所にまとめる ③ 配線は一筆書きで枝分かれを減らす。配置を何通りか作って最も美しいものを選びます。'));
         if (d.type === 'strip') group('銅箔パターンの向き', 'stripDir', () => d.stripDir, v => d.stripDir = v);
         else {
           group('配線の方針', 'policy', () => d.policy, v => d.policy = v);
@@ -8073,7 +8306,7 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
 
   /* ================= 起動 ================= */
   S.customs = store.get('customs', []) || [];
-  { const c = store.get('cfg', null); if (c && typeof c === 'object') ['type', 'auto', 'cols', 'rows', 'stripDir', 'policy', 'quality', 'forced'].forEach(k => { if (k in c) S.cfg[k] = c[k]; }); }
+  { const c = store.get('cfg', null); if (c && typeof c === 'object') ['type', 'auto', 'cols', 'rows', 'stripDir', 'policy', 'quality', 'forced', 'beauty', 'blocks'].forEach(k => { if (k in c) S.cfg[k] = c[k]; }); }
   RD.readTheme();
   applyTheme(); themeTitle();
   let firstFit = false, lastW = 0, lastH = 0;
@@ -9420,7 +9653,9 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
     const order = PX.nets.map((n, ni) => {
       const ps = n.pads.map(([ci, pi]) => padWorld(PX.comps[ci], PX.comps[ci].pads[pi]));
       let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; ps.forEach(p => { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); });
-      return { ni, len: (x1 - x0) + (y1 - y0) + (n.power ? 1000 : 0) };
+      // 美しい配線: GND → 電源 → 信号の順 (GND を最短で引く)。従来は電源を最後に
+      const rank = PX.beauty === false ? (n.power ? 1000 : 0) : (n.cls === 'gnd' ? -2000 : n.power ? -1000 : 0);
+      return { ni, len: (x1 - x0) + (y1 - y0) + rank };
     }).sort((a, b) => a.len - b.len).map(o => o.ni);
     if (PX.pour.B && !opts.noPourSkip) { const gi = PX.nets.findIndex(n => n.name === PX.pour.net); if (gi >= 0 && opts.skipPourNet) order.splice(order.indexOf(gi), 1); }
     void conn0;
@@ -9441,9 +9676,15 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
         // 最大のグループを始点に、最も近いグループを目標に
         gl.sort((a, b) => b.length - a.length);
         const srcRoot = conn.find(conn.items.indexOf(gl[0][0]));
-        const srcItems = conn.items.filter((it, k) => conn.find(k) === srcRoot);
+        let srcItems = conn.items.filter((it, k) => conn.find(k) === srcRoot);
+        // 美しい配線: 線の途中から枝分かれさせず、まだ線が 1 本以下のパッド (一筆書きの端) から引く
+        const padDeg = it => PX.tracks.filter(t => t.net === ni && [[t.x1, t.y1], [t.x2, t.y2]].some(([x, y]) => Math.abs(x - it.pw.x) <= it.pw.w / 2 + 0.05 && Math.abs(y - it.pw.y) <= it.pw.h / 2 + 0.05)).length;
+        if (PX.beauty !== false) {
+          const ends = srcItems.filter(it => it.type === 'pad' && padDeg(it) < 2);
+          if (ends.length) srcItems = ends;
+        }
         let tgt = null, bd = 1e9;
-        gl.slice(1).forEach(gp => gp.forEach(p => gl[0].forEach(q => { const d = Math.hypot(p.pw.x - q.pw.x, p.pw.y - q.pw.y); if (d < bd) { bd = d; tgt = p; } })));
+        const srcPads = srcItems.filter(it => it.type === 'pad'); gl.slice(1).forEach(gp => gp.forEach(p => (srcPads.length ? srcPads : gl[0]).forEach(q => { const d = Math.hypot(p.pw.x - q.pw.x, p.pw.y - q.pw.y); if (d < bd) { bd = d; tgt = p; } })));
         const tgtRoot = conn.find(conn.items.indexOf(tgt));
         const tgtItems = conn.items.filter((it, k) => conn.find(k) === tgtRoot);
         // 始点・目標セル
@@ -10931,7 +11172,6 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
     ['PCB: DRC (デザインルールチェック)', () => { window.UBPcb.activate(true); window.UBPcb.runDRC(); window.UBPcb.render(); }],
     ['電子工作 計算ツール', () => window.UBCalc.open(), 'T'],
     ['表示テーマを切り替え', () => $('bTheme').click()],
-    ...(window.AndroidBridge || /Android/i.test(navigator.userAgent || '') ? [] : [['表示スタイルを切り替え (Android / PC)', () => window.UBSetUI(document.documentElement.classList.contains('md') ? 'classic' : 'md')]]),
     ['元に戻す', () => A.undo(), 'Ctrl+Z'], ['やり直し', () => A.redo(), 'Ctrl+Y'],
     ['全体表示', () => A.fit(), 'F'],
     ['キーボード ショートカット一覧', () => shortcuts(), '?']
@@ -11160,10 +11400,6 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
 (function () {
   'use strict';
   const D = document.documentElement;
-  window.UBSetUI = mode => {
-    try { localStorage.setItem('ubspice.ui', mode); } catch (e) { }
-    location.replace(location.pathname + location.hash);
-  };
   if (!D.classList.contains('md')) return;
 
   const UB = window.UniBoard, A = UB.api, S = () => UB.state;
@@ -11223,8 +11459,7 @@ html.md .px-side{background:var(--md-surface-low);border-left:0}
       tab === 'sch' && [IC.parts, '部品リスト', () => $('bPal2').click(), $('bPal2').getAttribute('aria-pressed') === 'true' ? '表示中' : ''],
       tab === 'sch' && [IC.all, 'すべて選択', () => $('bAll').click()],
       tab !== 'pcbx' && [IC.info, '情報パネル', () => $('bInsp').click(), $('bInsp').getAttribute('aria-pressed') === 'true' ? '表示中' : ''],
-      [IC.theme, '表示テーマ', () => $('bTheme').click(), themeName()],
-      !D.classList.contains('android') && !/Android/i.test(navigator.userAgent || '') && [IC.style, 'PC 用の表示に切り替え', () => window.UBSetUI('classic')]
+      [IC.theme, '表示テーマ', () => $('bTheme').click(), themeName()]
     ].filter(x => x !== false);
   }
   function openMenu() {

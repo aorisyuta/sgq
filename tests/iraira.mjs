@@ -6,7 +6,7 @@ const errs = []; p.on('pageerror', e => errs.push(e.message));
 await p.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort());
 await p.goto('file://' + process.cwd() + '/index.html'); await p.waitForTimeout(1000);
 // 「読み込み」→ 貼り付けで読み込む (ユーザーと同じ手順)
-await p.click('#bImport'); await p.click('.pastebox summary');
+await p.click('.md-more'); await p.click('.md-menu button:has-text("開く")'); await p.click('.pastebox summary');
 await p.fill('.pastebox textarea', fs.readFileSync('examples/iraira-stick.json', 'utf8'));
 await p.click('text=貼り付けた内容を読み込む'); await p.waitForTimeout(600);
 await p.screenshot({ path: OUT + '/ira-sch.png' });
@@ -23,7 +23,7 @@ const r = await p.evaluate(async () => {
   return { off, base: base.length };
 });
 console.log(JSON.stringify(r));
-await p.click('#tabPcb'); await p.waitForTimeout(300); await p.click('#bReseed'); await p.waitForTimeout(3500);
+await p.click('.md-nav-it[data-for="tabPcb"]'); await p.waitForTimeout(300); await p.click('#bReseed'); await p.waitForTimeout(3500);
 console.log(await p.evaluate(() => { const b = window.UniBoard.state.board; return b.board.cols + 'x' + b.board.rows + ' routed ' + b.result.metrics.routed + '/' + b.result.metrics.nets + ' drc ' + b.problems.length; }));
 await p.screenshot({ path: OUT + '/ira-perf.png' });
 console.log('ERR', errs.join('\n') || 'none');

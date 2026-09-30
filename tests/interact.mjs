@@ -18,7 +18,7 @@ await p.keyboard.press('Control+z'); await p.waitForTimeout(100);
 res.afterUndo = await p.evaluate(() => window.UniBoard.state.doc.components.length);
 // プローブ: 配線をクリック
 await p.evaluate(() => { window.UBSim.state.cfg.type = 'tran'; window.UBSim.state.cfg.tstop = ''; });
-await p.click('#bRunQ'); await p.waitForTimeout(2000);
+await p.click('.md-fab'); await p.waitForTimeout(2000);
 res.log = await p.evaluate(() => window.UBSim.state.log.map(m => m.t));
 await p.click('#tProbe');
 const pt = await p.evaluate(() => { const S = window.UniBoard.state, w = S.doc.wires[3], v = S.vSch; return [(w.x1 + w.x2) / 2 * v.z + v.x, (w.y1 + w.y2) / 2 * v.z + v.y]; });
@@ -27,12 +27,12 @@ res.probes = await p.evaluate(() => window.UBSim.state.probes.map(x => x.name));
 await p.screenshot({ path: OUT + '/i1-probe.png' });
 await p.keyboard.press('Escape');
 // 蛇の目基板
-await p.click('#tabPcb'); await p.waitForTimeout(400);
+await p.click('.md-nav-it[data-for="tabPcb"]'); await p.waitForTimeout(400);
 await p.click('#bReseed'); await p.waitForTimeout(3000);
 res.perf = await p.evaluate(() => { const b = window.UniBoard.state.board; return b ? b.board.cols + 'x' + b.board.rows + ' routed ' + b.result.metrics.routed + '/' + b.result.metrics.nets + ' drc ' + b.problems.length : 'none'; });
 await p.screenshot({ path: OUT + '/i2-perf.png' });
 // PCB で手動配線
-await p.click('#tabPcbx'); await p.waitForTimeout(500);
+await p.click('.md-nav-it[data-for="tabPcbx"]'); await p.waitForTimeout(500);
 await p.evaluate(() => { const P = window.UBPcb.state; P.tracks = []; P.vias = []; window.UBPcb.render(); });
 const pads = await p.evaluate(() => {
   const P = window.UBPcb.state, n = P.nets.find(n => n.pads.length === 2 && !n.power) || P.nets.find(n => n.pads.length >= 2);
@@ -51,7 +51,7 @@ await p.screenshot({ path: OUT + '/i3-manual.png' });
 await p.keyboard.press('Control+z'); await p.waitForTimeout(100);
 res.afterUndoPcb = await p.evaluate(() => window.UBPcb.state.tracks.length);
 // 画面の切替
-await p.click('#tabSch'); await p.waitForTimeout(200);
+await p.click('.md-nav-it[data-for="tabSch"]'); await p.waitForTimeout(200);
 res.pcbHidden = await p.evaluate(() => document.getElementById('pcbx').hidden);
 // ネットリスト編集で直接実行
 await p.evaluate(() => { const S = window.UBSim.state; S.useCustom = true; S.custom = 'test\nV1 a 0 SIN(0 1 1k)\nR1 a b 1k\nC1 b 0 1u\n'; S.cfg.type = 'tran'; S.cfg.tstop = '5m'; });
